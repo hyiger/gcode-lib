@@ -24,8 +24,8 @@ import gcode_lib as gl
 # Paths to real files (skip all tests gracefully if absent)
 # ---------------------------------------------------------------------------
 
-GCODE_PATH  = "3DBenchy_0.6n_0.32mm_FLEX_COREONE_32m.gcode"
-BGCODE_PATH = "3DBenchy_0.6n_0.32mm_FLEX_COREONE_32m.bgcode"
+GCODE_PATH  = "tests/3DBenchy_0.6n_0.32mm_FLEX_COREONE_32m.gcode"
+BGCODE_PATH = "tests/3DBenchy_0.6n_0.32mm_FLEX_COREONE_32m.bgcode"
 
 needs_gcode  = pytest.mark.skipif(not os.path.exists(GCODE_PATH),  reason="real .gcode file not present")
 needs_bgcode = pytest.mark.skipif(not os.path.exists(BGCODE_PATH), reason="real .bgcode file not present")
