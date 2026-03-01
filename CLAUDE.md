@@ -8,8 +8,9 @@ Single-file, stdlib-only Python library for parsing, analysing, and transforming
 ## Key constraints
 
 - **Python 3.10+** — uses `from __future__ import annotations`.
-- **No third-party runtime deps** — stdlib only (`re`, `math`, `struct`, `zlib`, `tempfile`,
-  `os`, `dataclasses`, `subprocess`, `shutil`, `concurrent.futures`, `pathlib`).
+- **No third-party runtime deps** — stdlib only (`re`, `math`, `struct`, `zlib`, `base64`,
+  `tempfile`, `os`, `sys`, `dataclasses`, `subprocess`, `shutil`, `concurrent.futures`,
+  `pathlib`, `typing`).
 - **G91 support**: `apply_xy_transform`, `apply_skew`, and `translate_xy` raise `ValueError`
   for relative moves. Use `to_absolute_xy()` to normalise first.  `translate_xy_allow_arcs`
   also requires G90.
@@ -161,7 +162,7 @@ lines = gl.translate_xy(lines, dx=10, dy=5)
 
 ### Fit print to bed
 ```python
-lines = gl.linearize_arcs(gf.lines)   # required for fit mode (scales I/J too)
+lines = gl.linearize_arcs(gf.lines)   # required for fit mode (scale needs G1 segments)
 lines = gl.recenter_to_bed(
     lines,
     bed_min_x=0, bed_max_x=250,
