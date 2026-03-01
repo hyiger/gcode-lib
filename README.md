@@ -19,6 +19,7 @@ Supports both plain-text `.gcode` and Prusa binary `.bgcode` formats.
 - [XY transforms](#xy-transforms)
 - [Statistics and bounds](#statistics-and-bounds)
 - [Binary .bgcode files](#binary-bgcode-files)
+- [Slicer and vendor compatibility](#slicer-and-vendor-compatibility)
 - [API reference](#api-reference)
 
 ---
@@ -97,7 +98,7 @@ The top-level container returned by `load()` or `from_text()`:
 gf = gl.load("print.gcode")
 print(gf.source_format)         # "text" or "bgcode"
 print(len(gf.lines))            # number of GCodeLine objects
-print(len(gf.thumbnails))       # populated only for .bgcode files
+print(len(gf.thumbnails))       # populated for .bgcode and plain-text files with embedded thumbnails
 ```
 
 ---
@@ -496,6 +497,58 @@ gl.save(gf, "print_converted.gcode")
 
 ---
 
+## Slicer and vendor compatibility
+
+### G-code parsing and transforms
+
+All parsing, state tracking, arc linearization, XY transforms, and statistics functions are
+**fully vendor-agnostic**.  Any standards-compliant FFF G-code file produced by any slicer —
+PrusaSlicer, SuperSlicer, OrcaSlicer, Cura, ideaMaker, Simplify3D, Bambu Studio, or any other
+— can be loaded, parsed, and transformed.
+
+### Plain-text thumbnails
+
+Embedded thumbnails in plain-text `.gcode` files use the comment-block convention established
+by PrusaSlicer:
+
+```
+; thumbnail begin 16x16 584
+; <base64 data lines>
+; thumbnail end
+```
+
+The following slicers write thumbnails in this format and are **fully supported**:
+
+| Slicer | Notes |
+|---|---|
+| **PrusaSlicer** | All three image formats: `thumbnail` (PNG), `thumbnail_JPG`, `thumbnail_QOI` |
+| **SuperSlicer** | Same convention as PrusaSlicer |
+| **OrcaSlicer** | Same convention as PrusaSlicer |
+| **Cura** | Uses `thumbnail` (PNG) blocks |
+
+**Bambu Lab slicers** (Bambu Studio, OrcaSlicer for Bambu) use an incompatible format:
+thumbnail data is written as a single long comment line prefixed with `;gimage:` or `;simage:`.
+This format is **not supported**.  Bambu thumbnail lines will be left as ordinary comment lines
+in `gf.lines` and `gf.thumbnails` will be empty.
+
+### Binary `.bgcode` format
+
+The Prusa binary G-code format (`.bgcode`) is a **Prusa-specific** format.  No other slicer
+produces `.bgcode` files.
+
+Two limitations apply when loading `.bgcode`:
+
+- **Heatshrink-compressed GCode blocks are not supported.**  Current releases of PrusaSlicer
+  compress the embedded G-code using Heatshrink (compression type 3).  Attempting to load such
+  a file raises `ValueError: Heatshrink decompression is not supported`.
+  *Workaround:* export as plain `.gcode` from PrusaSlicer's export dialog.
+- **DEFLATE-compressed and uncompressed GCode blocks** are fully supported.
+
+Thumbnail and metadata blocks in `.bgcode` are unaffected by this limitation and are always
+read correctly regardless of GCode block compression type.
+
+---
+
 ## API reference
 
 ### Constants
@@ -540,7 +593,7 @@ gl.save(gf, "print_converted.gcode")
 | Attribute | Type | Description |
 |---|---|---|
 | `lines` | `List[GCodeLine]` | All lines in source order |
-| `thumbnails` | `List[Thumbnail]` | Thumbnails (`.bgcode` only) |
+| `thumbnails` | `List[Thumbnail]` | Thumbnails extracted from `.bgcode` or plain-text files with embedded thumbnail blocks |
 | `source_format` | `str` | `"text"` or `"bgcode"` |
 
 #### `Bounds`
