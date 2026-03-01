@@ -32,6 +32,7 @@ Design constraints
 
 from __future__ import annotations
 
+import base64
 import math
 import os
 import re
@@ -64,6 +65,40 @@ _BLK_THUMBNAIL  = 5
 _COMP_NONE      = 0
 _COMP_DEFLATE   = 1
 _ENC_RAW        = 0
+
+# Thumbnail image format codes (matching libbgcode EImageFormat)
+_IMG_PNG = 0
+_IMG_JPG = 1
+_IMG_QOI = 2
+
+# Map magic byte prefixes to format codes
+_IMG_MAGIC: List[Tuple[bytes, int]] = [
+    (b"\x89PNG", _IMG_PNG),
+    (b"\xff\xd8", _IMG_JPG),
+    (b"qoif",    _IMG_QOI),
+]
+
+# Map text keyword → format code (case-insensitive match on keyword suffix)
+_THUMB_KEYWORD_FMT: Dict[str, int] = {
+    "thumbnail":     _IMG_PNG,
+    "thumbnail_png": _IMG_PNG,
+    "thumbnail_jpg": _IMG_JPG,
+    "thumbnail_qoi": _IMG_QOI,
+}
+# Map format code → keyword used when re-emitting plain-text thumbnails
+_THUMB_FMT_KEYWORD: Dict[int, str] = {
+    _IMG_PNG: "thumbnail",      # PrusaSlicer-compatible default for PNG
+    _IMG_JPG: "thumbnail_JPG",
+    _IMG_QOI: "thumbnail_QOI",
+}
+_THUMB_B64_LINE_LEN = 76        # base64 characters per comment line
+
+# Regexes for plain-text thumbnail comment blocks
+_THUMB_BEGIN_RE = re.compile(
+    r"^;\s*(thumbnail(?:_\w+)?)\s+begin\s+(\d+)x(\d+)\s+(\d+)",
+    re.IGNORECASE,
+)
+_THUMB_END_RE = re.compile(r"^;\s*thumbnail(?:_\w+)?\s+end\b", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -132,15 +167,18 @@ class GCodeLine:
 
 @dataclass
 class Thumbnail:
-    """An image thumbnail extracted from a .bgcode file.
+    """An image thumbnail from a G-code file (text or binary).
 
-    ``params`` holds the raw 6-byte parameter block (width uint16, height
-    uint16, format uint16 per the libbgcode spec).  ``_raw_block`` is the
-    verbatim bytes of the full bgcode block, enabling lossless round-trips.
+    ``params`` holds a 6-byte block (width uint16, height uint16, format
+    uint16) following the libbgcode spec.  For thumbnails parsed from
+    plain-text files the format code is inferred from the keyword
+    (``thumbnail_JPG`` / ``thumbnail_QOI``) or from the decoded image magic
+    bytes.  ``_raw_block`` is set only for .bgcode sources; it carries the
+    verbatim block bytes used for lossless binary round-trips.
     """
     params: bytes        # 6-byte block params (width, height, fmt_code)
-    data: bytes          # Decompressed image bytes
-    _raw_block: bytes    # Full block bytes for verbatim reassembly
+    data: bytes          # Decompressed / decoded image bytes
+    _raw_block: bytes    # Full bgcode block bytes (b"" for text sources)
 
     @property
     def width(self) -> int:
@@ -490,26 +528,125 @@ def replace_or_append(
 
 
 # ---------------------------------------------------------------------------
+# Plain-text thumbnail helpers (private)
+# ---------------------------------------------------------------------------
+
+def _parse_text_thumbnails(
+    lines: List[GCodeLine],
+) -> Tuple[List[GCodeLine], List[Thumbnail]]:
+    """Extract thumbnail comment blocks from plain-text G-code lines.
+
+    Scans *lines* for ``; thumbnail[_FORMAT] begin WxH SIZE`` …
+    ``; thumbnail[_FORMAT] end`` blocks, decodes the base64 payload, and
+    returns ``(filtered_lines, thumbnails)`` where *filtered_lines* has all
+    thumbnail comment lines removed.
+
+    Supports keywords: ``thumbnail`` / ``thumbnail_PNG`` (PNG),
+    ``thumbnail_JPG`` (JPEG), ``thumbnail_QOI`` (QOI).  The format code is
+    taken from the keyword when unambiguous; otherwise it is inferred from
+    the decoded image magic bytes.
+    """
+    result: List[GCodeLine] = []
+    thumbnails: List[Thumbnail] = []
+    i = 0
+    while i < len(lines):
+        m = _THUMB_BEGIN_RE.match(lines[i].raw)
+        if not m:
+            result.append(lines[i])
+            i += 1
+            continue
+
+        keyword, w_str, h_str = m.group(1), m.group(2), m.group(3)
+        width, height = int(w_str), int(h_str)
+
+        # Collect base64 payload lines until the matching end marker
+        b64_parts: List[str] = []
+        i += 1
+        while i < len(lines):
+            raw = lines[i].raw
+            if _THUMB_END_RE.match(raw):
+                i += 1  # consume end line
+                break
+            # Strip leading "; " or ";" comment prefix
+            if raw.startswith("; "):
+                b64_parts.append(raw[2:])
+            elif raw.startswith(";"):
+                b64_parts.append(raw[1:])
+            else:
+                b64_parts.append(raw)
+            i += 1
+
+        try:
+            img_data = base64.b64decode("".join(b64_parts))
+        except Exception:
+            # Malformed block — skip silently (lines already consumed)
+            continue
+
+        # Determine format code from keyword, falling back to magic bytes
+        fmt_code = _THUMB_KEYWORD_FMT.get(keyword.lower(), -1)
+        if fmt_code == -1:
+            fmt_code = _IMG_PNG  # default
+            for magic, code in _IMG_MAGIC:
+                if img_data[: len(magic)] == magic:
+                    fmt_code = code
+                    break
+
+        params = struct.pack("<HHH", width, height, fmt_code)
+        thumbnails.append(Thumbnail(params=params, data=img_data, _raw_block=b""))
+
+    return result, thumbnails
+
+
+def _render_text_thumbnails(thumbnails: List[Thumbnail]) -> str:
+    """Render *thumbnails* as plain-text G-code comment blocks.
+
+    Each thumbnail is wrapped in ``; keyword begin WxH SIZE`` /
+    ``; keyword end`` with the base64 payload split into
+    ``_THUMB_B64_LINE_LEN``-character comment lines.  A blank line
+    separates consecutive thumbnails.
+    """
+    parts: List[str] = []
+    for thumb in thumbnails:
+        keyword = _THUMB_FMT_KEYWORD.get(thumb.format_code, "thumbnail")
+        b64 = base64.b64encode(thumb.data).decode("ascii")
+        parts.append(
+            f"; {keyword} begin {thumb.width}x{thumb.height} {len(thumb.data)}"
+        )
+        for off in range(0, len(b64), _THUMB_B64_LINE_LEN):
+            parts.append("; " + b64[off : off + _THUMB_B64_LINE_LEN])
+        parts.append(f"; {keyword} end")
+        parts.append("")  # blank separator between thumbnails
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # I/O
 # ---------------------------------------------------------------------------
 
 def from_text(text: str) -> GCodeFile:
-    """Create a :class:`GCodeFile` from a G-code text string."""
-    return GCodeFile(
-        lines=parse_lines(text),
-        thumbnails=[],
-        source_format="text",
-    )
+    """Create a :class:`GCodeFile` from a G-code text string.
+
+    Thumbnail comment blocks (``; thumbnail begin`` … ``; thumbnail end``)
+    are extracted into :attr:`GCodeFile.thumbnails` and removed from
+    :attr:`GCodeFile.lines`, mirroring the behaviour of binary .bgcode
+    loading.
+    """
+    lines, thumbnails = _parse_text_thumbnails(parse_lines(text))
+    return GCodeFile(lines=lines, thumbnails=thumbnails, source_format="text")
 
 
 def to_text(gf: GCodeFile) -> str:
     """Render a :class:`GCodeFile` back to a G-code text string.
 
-    Lines are joined with newlines and a trailing newline is appended.
+    If *gf* carries thumbnails they are re-emitted as ``; thumbnail begin``
+    comment blocks at the top of the output, followed by the G-code lines.
     Untransformed lines preserve their original formatting via
     ``GCodeLine.raw``; transformed lines carry regenerated text.
     """
-    return "\n".join(line.raw for line in gf.lines) + "\n"
+    gcode = "\n".join(line.raw for line in gf.lines) + "\n"
+    if not gf.thumbnails:
+        return gcode
+    return _render_text_thumbnails(gf.thumbnails) + "\n" + gcode
 
 
 def load(path: str) -> GCodeFile:
@@ -530,7 +667,8 @@ def load(path: str) -> GCodeFile:
         )
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         text = fh.read()
-    return GCodeFile(lines=parse_lines(text), thumbnails=[], source_format="text")
+    lines, thumbnails = _parse_text_thumbnails(parse_lines(text))
+    return GCodeFile(lines=lines, thumbnails=thumbnails, source_format="text")
 
 
 def save(gf: GCodeFile, path: str) -> None:
