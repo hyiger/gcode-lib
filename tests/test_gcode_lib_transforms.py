@@ -163,6 +163,39 @@ def test_linearize_arcs_feedrate_on_first_segment_only():
     assert g1s_with_f[0].raw != "G1 X0 Y0"
 
 
+def test_linearize_arcs_z_word_on_first_segment_only():
+    """Z word in an arc is preserved on the first linearized segment only."""
+    lines = gl.parse_lines("G90\nG1 X0 Y0 Z0.2\nG2 X10 Y0 Z0.4 I5 J0")
+    result = gl.linearize_arcs(lines)
+    arc_segs = [ln for ln in result if ln.command == "G1" and ln.raw != "G1 X0 Y0 Z0.2"]
+    # First segment carries Z
+    assert "Z" in arc_segs[0].words
+    assert arc_segs[0].words["Z"] == pytest.approx(0.4)
+    # Remaining segments do not carry Z
+    for seg in arc_segs[1:]:
+        assert "Z" not in seg.words
+
+
+def test_linearize_arcs_z_state_updated():
+    """After linearizing an arc with Z, state.z reflects the arc's Z endpoint."""
+    lines = gl.parse_lines("G90\nG1 X0 Y0 Z0.2\nG2 X10 Y0 Z0.4 I5 J0\nG1 X20 Y0")
+    result = gl.linearize_arcs(lines)
+    state = gl.ModalState()
+    for ln in result:
+        gl.advance_state(state, ln)
+    assert state.z == pytest.approx(0.4)
+
+
+def test_linearize_arcs_no_z_word_state_unchanged():
+    """An arc without a Z word must not change the Z state."""
+    lines = gl.parse_lines("G90\nG1 X0 Y0 Z0.3\nG2 X10 Y0 I5 J0")
+    result = gl.linearize_arcs(lines)
+    state = gl.ModalState()
+    for ln in result:
+        gl.advance_state(state, ln)
+    assert state.z == pytest.approx(0.3)
+
+
 # ---------------------------------------------------------------------------
 # apply_xy_transform
 # ---------------------------------------------------------------------------

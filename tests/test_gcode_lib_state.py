@@ -163,6 +163,24 @@ def test_advance_state_arc_feedrate():
     assert st.f == pytest.approx(1500.0)
 
 
+def test_advance_state_arc_updates_z_abs():
+    """G2/G3 with a Z word must update state.z (absolute mode)."""
+    st = _state_after("G90\nG2 X10 Y0 Z0.4 I5 J0")
+    assert st.z == pytest.approx(0.4)
+
+
+def test_advance_state_arc_updates_z_rel():
+    """G2/G3 with a Z word must update state.z (relative mode)."""
+    st = _state_after("G90\nG1 Z0.2\nG91\nG2 X5 Y0 Z0.2 I2.5 J0")
+    assert st.z == pytest.approx(0.4)
+
+
+def test_advance_state_arc_no_z_leaves_z_unchanged():
+    """G2/G3 without a Z word must not change state.z."""
+    st = _state_after("G90\nG1 Z0.3\nG2 X10 Y0 I5 J0")
+    assert st.z == pytest.approx(0.3)
+
+
 # ---------------------------------------------------------------------------
 # advance_state — non-modal lines with E word (e.g. firmware reset)
 # ---------------------------------------------------------------------------

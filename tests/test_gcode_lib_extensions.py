@@ -629,3 +629,227 @@ class TestFindPrusaSlicerExecutable:
              patch("gcode_lib.os.path.isfile", return_value=False):
             with pytest.raises(FileNotFoundError):
                 gl.find_prusaslicer_executable()
+
+
+# ===========================================================================
+# Edge-case / audit gap tests
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# OOB detection — edge cases
+# ---------------------------------------------------------------------------
+
+RECT_BED = [(0, 0), (250, 0), (250, 220), (0, 220)]
+
+
+class TestOOBEdgeCases:
+    def test_empty_lines_returns_empty(self):
+        assert gl.find_oob_moves([], RECT_BED) == []
+
+    def test_no_moves_returns_empty(self):
+        lines = gl.parse_lines("G28\nM104 S215\n; just a comment\n")
+        assert gl.find_oob_moves(lines, RECT_BED) == []
+
+    def test_all_in_bounds_returns_empty(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y10\nG1 X100 Y100\n")
+        assert gl.find_oob_moves(lines, RECT_BED) == []
+
+    def test_max_oob_all_in_bounds_returns_zero(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y10\nG1 X100 Y100\n")
+        assert gl.max_oob_distance(lines, RECT_BED) == pytest.approx(0.0)
+
+    def test_g91_mode_handled_correctly(self):
+        """find_oob_moves must work in G91 relative mode, not just G90."""
+        # Start at (240, 0), then move +20 in X → lands at (260, 0) → OOB
+        lines = gl.parse_lines("G90\nG1 X240 Y0\nG91\nG1 X20 Y0\n")
+        hits = gl.find_oob_moves(lines, RECT_BED)
+        assert len(hits) == 1
+        assert hits[0].x == pytest.approx(260.0)
+        assert hits[0].distance_outside > 0.0
+
+    def test_concave_polygon(self):
+        """L-shaped (concave) polygon: point inside concavity is correctly OOB."""
+        # L-shape: missing top-right quadrant
+        l_shape = [
+            (0, 0), (200, 0), (200, 100), (100, 100), (100, 200), (0, 200)
+        ]
+        # (150, 150) is inside the bounding box but in the missing quadrant
+        lines = gl.parse_lines("G90\nG1 X150 Y150\n")
+        hits = gl.find_oob_moves(lines, l_shape)
+        assert len(hits) == 1
+
+    def test_single_point_exactly_on_edge(self):
+        """A point on the polygon edge should be treated as in-bounds (no OOB hit)."""
+        # (0, 110) is on the left edge of the rectangle
+        lines = gl.parse_lines("G90\nG1 X0 Y110\n")
+        hits = gl.find_oob_moves(lines, RECT_BED)
+        # May be 0 or 1 depending on ray-casting edge convention — just assert
+        # that if there is a hit, distance_outside is essentially zero
+        for h in hits:
+            assert h.distance_outside < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# iter_layers — edge cases
+# ---------------------------------------------------------------------------
+
+class TestIterLayersEdgeCases:
+    def test_no_z_moves_single_group(self):
+        """File with no Z changes yields a single layer at Z=0."""
+        lines = gl.parse_lines("G90\nG1 X10 Y10\nG1 X20 Y20\n")
+        layers = list(gl.iter_layers(lines))
+        assert len(layers) == 1
+        z, group = layers[0]
+        assert z == pytest.approx(0.0)
+        assert len(group) == len(lines)
+
+    def test_empty_input_yields_nothing(self):
+        assert list(gl.iter_layers([])) == []
+
+    def test_arc_with_z_triggers_layer_change(self):
+        """A G2 arc with a Z word must trigger a new layer (advance_state fix)."""
+        lines = gl.parse_lines("G90\nG1 X0 Y0 Z0.2\nG2 X10 Y0 Z0.4 I5 J0\nG1 X20 Y0\n")
+        layers = list(gl.iter_layers(lines))
+        z_heights = [z for z, _ in layers]
+        assert 0.4 in [pytest.approx(z) for z in z_heights] or \
+               any(abs(z - 0.4) < 1e-6 for z in z_heights)
+
+    def test_duplicate_z_no_extra_group(self):
+        """Two consecutive moves at the same Z must stay in the same layer."""
+        lines = gl.parse_lines("G90\nG1 Z0.2\nG1 X10 Y10\nG1 Z0.2\nG1 X20 Y20\n")
+        layers = list(gl.iter_layers(lines))
+        # Second G1 Z0.2 is the same height → should not start a new layer
+        assert len(layers) == 2  # layer 0 (Z=0) and layer 1 (Z=0.2)
+
+    def test_initial_state_respected(self):
+        """When initial_state has Z=1.0, the first group has z_height=1.0."""
+        initial = gl.ModalState()
+        initial.z = 1.0
+        lines = gl.parse_lines("G90\nG1 X10 Y10\n")
+        layers = list(gl.iter_layers(lines, initial_state=initial))
+        assert layers[0][0] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# render_template — edge cases
+# ---------------------------------------------------------------------------
+
+class TestRenderTemplateEdgeCases:
+    def test_numeric_suffix_in_key(self):
+        """{var0} should be substituted — key starts with letter, contains digit."""
+        result = gl.render_template("M104 S{temp0}", {"temp0": 215})
+        assert result == "M104 S215"
+
+    def test_underscore_in_key(self):
+        result = gl.render_template("{hotend_temp}", {"hotend_temp": 240})
+        assert result == "240"
+
+    def test_missing_key_preserved(self):
+        """Unknown {key} placeholders are left unchanged (no KeyError)."""
+        result = gl.render_template("G1 X{x_pos} Y{y_pos}", {"x_pos": 10})
+        assert result == "G1 X10 Y{y_pos}"
+
+    def test_uppercase_key_not_substituted(self):
+        """{TEMP} must not be substituted (uppercase, not matched by regex)."""
+        result = gl.render_template("M104 S{TEMP}", {"TEMP": 215})
+        assert result == "M104 S{TEMP}"
+
+    def test_key_starting_with_digit_not_substituted(self):
+        """{0var} must not be substituted (starts with digit)."""
+        result = gl.render_template("X{0var}", {"0var": 99})
+        assert result == "X{0var}"
+
+    def test_empty_template(self):
+        assert gl.render_template("", {}) == ""
+
+    def test_no_placeholders_unchanged(self):
+        gcode = "G28\nG90\nG1 X100 Y100\n"
+        assert gl.render_template(gcode, {"x": 5}) == gcode
+
+    def test_slicer_conditional_preserved(self):
+        t = "{if layer_num == 0}M106 S0{endif}"
+        assert gl.render_template(t, {}) == t
+
+    def test_value_converted_to_str(self):
+        """Numeric values are converted to str during substitution."""
+        result = gl.render_template("{x}", {"x": 3.14})
+        assert result == "3.14"
+
+
+# ---------------------------------------------------------------------------
+# analyze_xy_transform — edge cases
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeXYTransformEdgeCases:
+    def test_no_moves_returns_zeros(self):
+        """File with no XY moves should return move_count=0 and zero displacement."""
+        lines = gl.parse_lines("G28\nM104 S215\n; comment\n")
+        info = gl.analyze_xy_transform(lines, lambda x, y: (x + 10, y + 10))
+        assert info["move_count"] == 0
+        assert info["max_displacement"] == pytest.approx(0.0)
+        assert info["line_number"] == -1
+
+    def test_empty_input(self):
+        info = gl.analyze_xy_transform([], lambda x, y: (x, y))
+        assert info["move_count"] == 0
+
+    def test_identity_transform_zero_displacement(self):
+        lines = gl.parse_lines("G90\nG1 X50 Y100\nG1 X150 Y50\n")
+        info = gl.analyze_xy_transform(lines, lambda x, y: (x, y))
+        assert info["max_displacement"] == pytest.approx(0.0)
+        assert info["move_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# recenter_to_bed — edge cases
+# ---------------------------------------------------------------------------
+
+class TestRecenterToBedEdgeCases:
+    def test_print_larger_than_bed_fit_mode_shrinks(self):
+        """fit mode must scale the print down when it exceeds the bed."""
+        # 300 mm wide print on 250 mm bed with 0 margin
+        lines = gl.parse_lines(
+            "G90\nG1 X0 Y0\nG1 X300 Y0\nG1 X300 Y100\nG1 X0 Y100\nG1 X0 Y0\n"
+        )
+        result = gl.recenter_to_bed(
+            lines, 0, 250, 0, 220, margin=0.0, mode="fit"
+        )
+        bounds = gl.compute_bounds(result)
+        assert bounds.width <= 250.01
+        assert bounds.height <= 220.01
+
+    def test_zero_margin_uses_full_bed(self):
+        lines = gl.parse_lines("G90\nG1 X50 Y50\nG1 X100 Y100\n")
+        result = gl.recenter_to_bed(lines, 0, 200, 0, 200, margin=0.0, mode="center")
+        bounds = gl.compute_bounds(result)
+        assert bounds.center_x == pytest.approx(100.0, abs=0.5)
+        assert bounds.center_y == pytest.approx(100.0, abs=0.5)
+
+    def test_already_centred_noop(self):
+        """A print already at the bed centre should move negligibly."""
+        lines = gl.parse_lines("G90\nG1 X75 Y85\nG1 X125 Y135\n")
+        result = gl.recenter_to_bed(lines, 0, 200, 0, 220, margin=0.0, mode="center")
+        b_before = gl.compute_bounds(lines)
+        b_after  = gl.compute_bounds(result)
+        assert b_after.center_x == pytest.approx(100.0, abs=0.5)
+        assert b_after.center_y == pytest.approx(110.0, abs=0.5)
+        assert b_after.width == pytest.approx(b_before.width, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# slice_batch — edge cases
+# ---------------------------------------------------------------------------
+
+class TestSliceBatchEdgeCases:
+    def test_empty_inputs_returns_empty_list(self):
+        from unittest.mock import patch
+        with patch("gcode_lib.shutil.which", return_value=None), \
+             patch("gcode_lib.os.path.isfile", return_value=False):
+            # exe doesn't matter — empty input list is checked before any slicing
+            results = gl.slice_batch(
+                exe="/fake/slicer",
+                inputs=[],
+                output_dir="/tmp",
+                config_ini=None,
+            )
+        assert results == []

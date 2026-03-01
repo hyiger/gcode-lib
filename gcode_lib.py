@@ -406,9 +406,11 @@ def advance_state(state: ModalState, line: GCodeLine) -> None:
         if state.abs_xy:
             if "X" in words: state.x = words["X"]
             if "Y" in words: state.y = words["Y"]
+            state.z = words.get("Z", state.z)
         else:
             state.x += words.get("X", 0.0)
             state.y += words.get("Y", 0.0)
+            state.z += words.get("Z", 0.0)
         if "E" in words:
             state.e = words["E"] if state.abs_e else state.e + words["E"]
         if "F" in words:
@@ -986,9 +988,14 @@ def linearize_arcs(
 ) -> List[GCodeLine]:
     """Replace all G2/G3 arcs with equivalent G1 segments.
 
-    E is distributed proportionally across segments; feedrate and comment
-    are preserved on the first emitted segment only.  Returns a new list;
-    the input is unchanged.
+    E is distributed proportionally across segments; feedrate, Z word,
+    and comment are preserved on the first emitted segment only.  Returns
+    a new list; the input is unchanged.
+
+    Note: helical arcs (G2/G3 with a Z word) are not interpolated — the Z
+    value is placed on the first segment so the state advances correctly,
+    but intermediate segments are at the original Z height.  For purely
+    planar FFF G-code this is never an issue.
     """
     result: List[GCodeLine] = []
     state = initial_state.copy() if initial_state else ModalState()
@@ -1019,6 +1026,8 @@ def linearize_arcs(
 
         has_f  = "F" in words
         f_word = words.get("F")
+        has_z  = "Z" in words
+        z_word = words.get("Z")
 
         # Per-segment E for relative extrusion: distribute dE across segments
         # in output precision and close out on the last segment.
@@ -1044,6 +1053,9 @@ def linearize_arcs(
                         ei = round(dE - e_accum, other_decimals)
                 parts.append(f"E{fmt_axis('E', ei, xy_decimals, other_decimals)}")
 
+            # Z and F are placed on the first segment only (non-helical convention)
+            if has_z and z_word is not None and i == 1:
+                parts.append(f"Z{fmt_axis('Z', z_word, xy_decimals, other_decimals)}")
             if has_f and f_word is not None and i == 1:
                 parts.append(f"F{fmt_axis('F', f_word, xy_decimals, other_decimals)}")
 
@@ -1055,6 +1067,8 @@ def linearize_arcs(
             new_words: Dict[str, float] = {"X": xi, "Y": yi}
             if has_e:
                 new_words["E"] = ei  # type: ignore[possibly-undefined]
+            if has_z and z_word is not None and i == 1:
+                new_words["Z"] = z_word
             if has_f and f_word is not None and i == 1:
                 new_words["F"] = f_word
 
@@ -1069,9 +1083,11 @@ def linearize_arcs(
         if state.abs_xy:
             state.x = words.get("X", state.x)
             state.y = words.get("Y", state.y)
+            state.z = words.get("Z", state.z)
         else:
             state.x += words.get("X", 0.0)
             state.y += words.get("Y", 0.0)
+            state.z += words.get("Z", 0.0)
         if has_e:
             state.e = e_end
         if has_f and f_word is not None:
@@ -1110,8 +1126,8 @@ def apply_xy_transform(
         if line.is_move and ("X" in line.words or "Y" in line.words):
             if not state.abs_xy:
                 raise ValueError(
-                    "apply_xy_transform: relative XY (G91) is not supported; "
-                    "ensure G90 is active or pre-process moves to absolute coords."
+                    "apply_xy_transform: relative XY (G91) is not supported. "
+                    "Ensure G90 is active or pre-process with to_absolute_xy()."
                 )
             x_t = line.words.get("X", state.x)
             y_t = line.words.get("Y", state.y)
@@ -1678,7 +1694,8 @@ def find_oob_moves(
 
     Parameters
     ----------
-    lines:       G-code line list (should be in G90 mode).
+    lines:       G-code line list.  Both G90 (absolute) and G91 (relative)
+                 XY modes are handled correctly.
     bed_polygon: Convex or concave polygon as ``[(x,y), …]``.
     initial_state: Optional starting :class:`ModalState`.
     """
@@ -1894,10 +1911,10 @@ def iter_layers(
     current_group: List[GCodeLine] = []
 
     for line in lines:
-        # Peek at whether this line will change Z.
+        # Peek at whether this line will change Z (moves and arcs both carry Z).
         z_changes = False
         next_z = current_z
-        if line.is_move and "Z" in line.words:
+        if (line.is_move or line.is_arc) and "Z" in line.words:
             next_z = line.words["Z"] if state.abs_xy else state.z + line.words["Z"]
             if abs(next_z - current_z) > EPS:
                 z_changes = True
