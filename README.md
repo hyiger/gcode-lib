@@ -1,7 +1,8 @@
 # gcode-lib
 
 A general-purpose Python library for parsing, analysing, and transforming G-code files.
-Supports both plain-text `.gcode` and Prusa binary `.bgcode` formats.
+Supports both plain-text `.gcode` and Prusa binary `.bgcode` formats, with a full planar
+post-processing toolkit optimised for PrusaSlicer FDM workflows.
 
 **Requirements:** Python 3.10+ · stdlib only (no third-party dependencies)
 
@@ -17,10 +18,22 @@ Supports both plain-text `.gcode` and Prusa binary `.bgcode` formats.
 - [Tracking modal state](#tracking-modal-state)
 - [Arc linearization](#arc-linearization)
 - [XY transforms](#xy-transforms)
+- [G91 and relative-mode handling](#g91-and-relative-mode-handling)
+- [Translate arcs without linearization](#translate-arcs-without-linearization)
+- [Bed placement and validation](#bed-placement-and-validation)
+- [Layer iteration](#layer-iteration)
+- [Transform analysis](#transform-analysis)
 - [Statistics and bounds](#statistics-and-bounds)
+- [Printer and filament presets](#printer-and-filament-presets)
+- [Template rendering](#template-rendering)
+- [Thumbnail encoding](#thumbnail-encoding)
 - [Binary .bgcode files](#binary-bgcode-files)
+- [BGCode bytes API](#bgcode-bytes-api)
+- [PrusaSlicer CLI integration](#prusaslicer-cli-integration)
 - [Slicer and vendor compatibility](#slicer-and-vendor-compatibility)
 - [API reference](#api-reference)
+- [Limitations](#limitations)
+- [Running the tests](#running-the-tests)
 
 ---
 
@@ -52,9 +65,8 @@ bounds = stats.bounds
 print(f"Print size: {bounds.width:.1f} x {bounds.height:.1f} mm")
 print(f"Centred at: ({bounds.center_x:.1f}, {bounds.center_y:.1f})")
 
-# Shift the print 10 mm to the right, 5 mm forward
-lines = gl.linearize_arcs(gf.lines)     # required before any XY transform
-lines = gl.translate_xy(lines, dx=10.0, dy=5.0)
+# Shift the print 10 mm to the right, 5 mm forward (arc-safe, no linearization needed)
+lines = gl.translate_xy_allow_arcs(gf.lines, dx=10.0, dy=5.0)
 gf.lines = lines
 
 gl.save(gf, "benchy_shifted.gcode")
@@ -144,7 +156,7 @@ gl.save(gf, "output.gcode")
 
 # Save a .bgcode source back as .bgcode (thumbnails and metadata preserved)
 gf = gl.load("print.bgcode")
-gf.lines = gl.translate_xy(gl.linearize_arcs(gf.lines), dx=5.0, dy=0.0)
+gf.lines = gl.translate_xy_allow_arcs(gf.lines, dx=5.0, dy=0.0)
 gl.save(gf, "print_shifted.bgcode")
 ```
 
@@ -261,7 +273,9 @@ for line in gf.lines:
 
 ## Arc linearization
 
-G2/G3 arc commands must be converted to G1 segments before any XY transform can be applied.
+G2/G3 arc commands can be converted to G1 segments when an XY transform cannot preserve arc
+geometry (e.g. rotation, scaling, skew).  For simple translations, prefer
+[`translate_xy_allow_arcs`](#translate-arcs-without-linearization) which avoids this step.
 
 ### Basic linearization
 
@@ -302,9 +316,8 @@ print(f"Arcs before: {before}, after: {after}")   # after should be 0
 ## XY transforms
 
 All transform functions return a **new list** and do not mutate their input.
-Arcs must be linearized first.
 
-### Translate (shift)
+### Translate (shift) — requires linearized arcs
 
 ```python
 gf = gl.load("print.gcode")
@@ -391,6 +404,234 @@ lines = gl.translate_xy(
 
 ---
 
+## G91 and relative-mode handling
+
+Many slicer-generated files use `G91` for short relative moves (for example retraction and
+unretraction sequences).  `to_absolute_xy()` converts all relative XY motion to absolute G90
+coordinates so the file can then be passed to any XY transform.
+
+```python
+import gcode_lib as gl
+
+gf = gl.load("print.gcode")
+
+# Convert any G91 segments to absolute G90 equivalents
+lines = gl.to_absolute_xy(gf.lines)
+
+# Now all transforms work safely — no more G91 ValueError
+lines = gl.translate_xy(lines, dx=5.0, dy=0.0)
+gf.lines = lines
+gl.save(gf, "output.gcode")
+```
+
+`to_absolute_xy` drops all `G91` commands, rewrites the affected `G0`/`G1` lines with their
+accumulated absolute XY positions, and prepends a single `G90` line when any relative moves
+were found.  Z, E, F, and comments are always preserved unchanged.
+
+```python
+# Supply an explicit starting state if the file begins mid-print
+initial = gl.ModalState()
+initial.x = 50.0
+initial.y = 50.0
+
+lines = gl.to_absolute_xy(gf.lines, initial_state=initial)
+```
+
+---
+
+## Translate arcs without linearization
+
+`translate_xy_allow_arcs()` shifts XY coordinates without first requiring arc linearization.
+It translates `G0`/`G1` endpoints **and** `G2`/`G3` arc endpoints in one pass, leaving arc
+parameters (`I`, `J`) untouched (they are always relative to the arc start point in default
+`G91.1` mode).
+
+```python
+import gcode_lib as gl
+
+gf = gl.load("print.gcode")
+
+# Shift without destroying arc commands — no linearize_arcs needed
+lines = gl.translate_xy_allow_arcs(gf.lines, dx=10.0, dy=5.0)
+gf.lines = lines
+gl.save(gf, "shifted.gcode")
+```
+
+> **Absolute IJ mode (`G90.1`):** If the file uses absolute IJ offsets, `I` and `J` are also
+> shifted by `(dx, dy)` so that arc centres remain correct.
+
+> **G91 in file:** `translate_xy_allow_arcs` raises `ValueError` for relative XY moves, the
+> same as `translate_xy`.  Pre-process with `to_absolute_xy()` if needed.
+
+---
+
+## Bed placement and validation
+
+### Out-of-bounds detection
+
+`find_oob_moves()` reports every XY move that lands outside a given bed polygon:
+
+```python
+import gcode_lib as gl
+
+gf = gl.load("print.gcode")
+
+# Rectangular bed 0..250 x 0..220
+bed = [(0, 0), (250, 0), (250, 220), (0, 220)]
+
+hits = gl.find_oob_moves(gf.lines, bed_polygon=bed)
+for hit in hits:
+    print(
+        f"Line {hit.line_number}: ({hit.x:.2f}, {hit.y:.2f})  "
+        f"{hit.distance_outside:.3f} mm outside bed"
+    )
+
+# Quick check: how far out is the worst offender?
+worst = gl.max_oob_distance(gf.lines, bed_polygon=bed)
+print(f"Max OOB distance: {worst:.3f} mm")
+```
+
+The `bed_polygon` is any sequence of `(x, y)` tuples; the polygon is automatically closed.
+Non-rectangular (e.g. delta or custom-shape) beds are fully supported.
+
+```python
+# Validate before saving
+if gl.max_oob_distance(gf.lines, bed_polygon=bed) > 0.0:
+    raise ValueError("Print exceeds bed boundaries!")
+gl.save(gf, "safe.gcode")
+```
+
+### Recenter or fit to bed
+
+`recenter_to_bed()` positions the print on the bed in one call:
+
+```python
+p = gl.PRINTER_PRESETS["MK4"]
+
+lines = gl.recenter_to_bed(
+    gf.lines,
+    bed_min_x=0.0, bed_max_x=p["bed_x"],
+    bed_min_y=0.0, bed_max_y=p["bed_y"],
+    margin=5.0,    # mm clearance on each side
+    mode="center", # "center" or "fit"
+)
+gf.lines = lines
+gl.save(gf, "recentered.gcode")
+```
+
+| Mode | Effect |
+|---|---|
+| `"center"` | Translates the print so its bounding box is centred within the usable bed area (bed minus margin). Arc commands are preserved — no linearization required. |
+| `"fit"` | Scales **and** centres the print using the largest uniform scale factor that keeps it within the usable area. Arcs are consumed during the scale; the result contains only `G1` lines. |
+
+---
+
+## Layer iteration
+
+### Iterate over layers
+
+`iter_layers()` groups lines by Z height, yielding each layer as a `(z_height, [lines])` pair:
+
+```python
+import gcode_lib as gl
+
+gf = gl.load("print.gcode")
+
+for z, layer_lines in gl.iter_layers(gf.lines):
+    print(f"Layer Z={z:.3f}  lines={len(layer_lines)}")
+```
+
+The Z-change line (the `G1 Z…` that initiates the new layer) is included as the **first** line
+of its new layer, not the last line of the previous one.
+
+```python
+# Count lines per layer and find the thickest
+layer_sizes = {z: len(ll) for z, ll in gl.iter_layers(gf.lines)}
+busiest_z = max(layer_sizes, key=layer_sizes.get)
+print(f"Busiest layer: Z={busiest_z:.3f}  ({layer_sizes[busiest_z]} lines)")
+```
+
+### Apply a transform to selected layers only
+
+`apply_xy_transform_by_layer()` runs a transform on a subset of layers, identified by Z range:
+
+```python
+import math
+
+angle = math.radians(45)
+
+def rotate(x, y):
+    return (
+        x * math.cos(angle) - y * math.sin(angle),
+        x * math.sin(angle) + y * math.cos(angle),
+    )
+
+# Only rotate layers at Z >= 2.0 mm
+lines = gl.apply_xy_transform_by_layer(
+    gf.lines,
+    transform_fn=rotate,
+    z_min=2.0,   # skip layers below this Z
+    z_max=None,  # no upper limit
+)
+gf.lines = lines
+```
+
+Both `z_min` and `z_max` are inclusive bounds.  Set either to `None` to leave that bound open.
+Layers outside the Z range pass through unchanged.
+
+```python
+# Apply a different shift to a specific Z band
+lines = gl.apply_xy_transform_by_layer(
+    gf.lines,
+    transform_fn=lambda x, y: (x + 2.0, y),
+    z_min=1.0,
+    z_max=3.0,
+)
+```
+
+---
+
+## Transform analysis
+
+`analyze_xy_transform()` performs a **dry run** of any transform function and returns a summary
+dict — without modifying any G-code.  Use it to validate a transform before committing the
+result to disk.
+
+```python
+import gcode_lib as gl
+
+gf = gl.load("print.gcode")
+
+def my_shift(x, y):
+    return (x + 10.0, y + 5.0)
+
+info = gl.analyze_xy_transform(gf.lines, my_shift)
+print(f"Max X displacement : {info['max_dx']:.3f} mm")
+print(f"Max Y displacement : {info['max_dy']:.3f} mm")
+print(f"Max total displace : {info['max_displacement']:.3f} mm")
+print(f"Worst line         : {info['line_number']}")
+print(f"Total moves        : {info['move_count']}")
+```
+
+### Validate against bed limits before transforming
+
+```python
+bed = [(0, 0), (250, 0), (250, 220), (0, 220)]
+
+# Check the transform stays in bounds before applying it
+info = gl.analyze_xy_transform(gf.lines, my_shift)
+worst_x = info["max_dx"]
+worst_y = info["max_dy"]
+
+# Then apply
+lines = gl.translate_xy_allow_arcs(gf.lines, dx=10.0, dy=5.0)
+hits = gl.find_oob_moves(lines, bed_polygon=bed)
+if hits:
+    raise ValueError(f"{len(hits)} moves outside bed after transform")
+```
+
+---
+
 ## Statistics and bounds
 
 ### Print statistics
@@ -438,22 +679,171 @@ extruding_bounds = gl.compute_bounds(
 print(f"Extruded area: {extruding_bounds.width:.1f} x {extruding_bounds.height:.1f} mm")
 ```
 
-### Centre a print on the bed
+### Centre a print on the bed (manual method)
 
 ```python
 gf = gl.load("print.gcode")
-lines = gl.linearize_arcs(gf.lines)
 
-bounds = gl.compute_bounds(lines)
-bed_cx, bed_cy = 150.0, 150.0   # your bed centre
+bounds = gl.compute_bounds(gf.lines)
+bed_cx, bed_cy = 125.0, 110.0   # MK4 bed centre
 
 dx = bed_cx - bounds.center_x
 dy = bed_cy - bounds.center_y
 
-lines = gl.translate_xy(lines, dx=dx, dy=dy)
+lines = gl.translate_xy_allow_arcs(gf.lines, dx=dx, dy=dy)
 gf.lines = lines
 gl.save(gf, "centred.gcode")
 ```
+
+Or use `recenter_to_bed()` for a one-call equivalent — see [Bed placement and validation](#bed-placement-and-validation).
+
+---
+
+## Printer and filament presets
+
+Built-in presets provide common bed dimensions and printing parameters for Prusa printers.
+
+### Printer presets
+
+```python
+print(list(gl.PRINTER_PRESETS.keys()))
+# ['COREONE', 'MK4', 'MK3S', 'MINI', 'XL']
+
+p = gl.PRINTER_PRESETS["MK4"]
+print(p["bed_x"], p["bed_y"], p["max_z"])   # 250.0  220.0  220.0
+```
+
+| Key | `bed_x` mm | `bed_y` mm | `max_z` mm |
+|---|---|---|---|
+| `COREONE` | 250.0 | 220.0 | 250.0 |
+| `MK4` | 250.0 | 220.0 | 220.0 |
+| `MK3S` | 250.0 | 210.0 | 210.0 |
+| `MINI` | 180.0 | 180.0 | 180.0 |
+| `XL` | 360.0 | 360.0 | 360.0 |
+
+### Filament presets
+
+```python
+print(list(gl.FILAMENT_PRESETS.keys()))
+# ['PLA', 'PETG', 'ASA', 'TPU', 'ABS']
+
+f = gl.FILAMENT_PRESETS["PLA"]
+print(f["hotend"], f["bed"], f["fan"], f["retract"])
+# 215  60  100  0.8
+```
+
+| Key | `hotend` °C | `bed` °C | `fan` % | `retract` mm |
+|---|---|---|---|---|
+| `PLA` | 215 | 60 | 100 | 0.8 |
+| `PETG` | 240 | 80 | 40 | 0.8 |
+| `ASA` | 255 | 90 | 20 | 1.0 |
+| `TPU` | 225 | 45 | 30 | 1.5 |
+| `ABS` | 245 | 100 | 30 | 1.0 |
+
+### Using presets for bed operations
+
+```python
+p = gl.PRINTER_PRESETS["MK4"]
+
+lines = gl.recenter_to_bed(
+    gf.lines,
+    bed_min_x=0.0, bed_max_x=p["bed_x"],
+    bed_min_y=0.0, bed_max_y=p["bed_y"],
+    margin=5.0,
+    mode="center",
+)
+```
+
+---
+
+## Template rendering
+
+`render_template()` substitutes `{variable}` placeholders in G-code start/end scripts.
+
+Only **simple `{lowercase_identifier}` patterns** are replaced — identifiers that start with a
+lowercase letter and contain only lowercase letters, digits, and underscores.  All other `{…}`
+tokens (PrusaSlicer conditionals like `{if …}`, `{elsif …}`, `{else}`, `{endif}`, and any
+uppercase or complex expressions) are left **exactly as written**.
+
+```python
+import gcode_lib as gl
+
+template = """\
+M104 S{hotend_temp}   ; set hotend
+M140 S{bed_temp}      ; set bed
+G28                   ; home
+{if is_first_layer}
+M106 S0               ; fan off first layer
+{endif}
+"""
+
+variables = {
+    "hotend_temp": 215,
+    "bed_temp": 60,
+}
+
+rendered = gl.render_template(template, variables)
+print(rendered)
+# M104 S215   ; set hotend
+# M140 S60    ; set bed
+# G28         ; home
+# {if is_first_layer}   ← preserved (not a simple lowercase identifier)
+# M106 S0               ; fan off first layer
+# {endif}               ← preserved
+```
+
+### Combine with filament presets
+
+```python
+pla = gl.FILAMENT_PRESETS["PLA"]
+
+rendered = gl.render_template(template, {
+    "hotend_temp": pla["hotend"],
+    "bed_temp":    pla["bed"],
+})
+```
+
+Unknown `{keys}` that are not in the `variables` dict are left untouched (no `KeyError`).
+
+---
+
+## Thumbnail encoding
+
+`encode_thumbnail_comment_block()` creates a PrusaSlicer-compatible thumbnail comment block
+from raw PNG bytes.  The resulting string can be prepended to any G-code file.
+
+```python
+import gcode_lib as gl
+
+# Read a PNG thumbnail from disk
+with open("thumb_16x16.png", "rb") as f:
+    png_bytes = f.read()
+
+block = gl.encode_thumbnail_comment_block(16, 16, png_bytes)
+print(block)
+# ; thumbnail begin 16x16 584
+# ; iVBORw0KGgoAAAANSUhEUgAAAA...
+# ; thumbnail end
+```
+
+### Embed a thumbnail into a plain-text G-code file
+
+```python
+gf = gl.load("print.gcode")
+
+with open("thumb_220x124.png", "rb") as f:
+    png_bytes = f.read()
+
+header_block = gl.encode_thumbnail_comment_block(220, 124, png_bytes)
+thumb_lines = gl.parse_lines(header_block)
+
+# Prepend the thumbnail block before the G-code body
+gf.lines = thumb_lines + gf.lines
+gl.save(gf, "print_with_thumb.gcode")
+```
+
+The format produced is identical to PrusaSlicer's output and is automatically read back into
+`gf.thumbnails` on the next `load()`.
 
 ---
 
@@ -478,9 +868,8 @@ for thumb in gf.thumbnails:
 ```python
 gf = gl.load("print.bgcode")
 
-# Transform (linearize arcs first)
-lines = gl.linearize_arcs(gf.lines)
-lines = gl.translate_xy(lines, dx=10.0, dy=0.0)
+# Arc-safe translation — no linearization needed for a simple shift
+lines = gl.translate_xy_allow_arcs(gf.lines, dx=10.0, dy=0.0)
 gf.lines = lines
 
 # Save back as .bgcode — thumbnails and metadata are preserved
@@ -494,6 +883,151 @@ gf = gl.load("print.bgcode")
 gf.source_format = "text"          # tell save() to write plain text
 gl.save(gf, "print_converted.gcode")
 ```
+
+---
+
+## BGCode bytes API
+
+In addition to `load()` / `save()` which work with file paths, two functions work directly with
+`bytes` objects for in-memory or streaming workflows:
+
+```python
+import gcode_lib as gl
+
+# Decode raw BGCode bytes (e.g. received over a network socket)
+with open("print.bgcode", "rb") as f:
+    raw = f.read()
+
+gf = gl.read_bgcode(raw)
+print(f"Lines: {len(gf.lines)}")
+print(f"Thumbnails: {len(gf.thumbnails)}")
+
+# Transform the G-code
+gf.lines = gl.translate_xy_allow_arcs(gf.lines, dx=5.0, dy=0.0)
+
+# Re-encode as BGCode bytes — thumbnails preserved
+output_bytes = gl.write_bgcode(gl.to_text(gf), thumbnails=gf.thumbnails)
+
+with open("output.bgcode", "wb") as f:
+    f.write(output_bytes)
+```
+
+```python
+# Create a brand-new BGCode file from plain-text G-code (no thumbnails)
+gcode_text = "G28\nG90\nG1 X50 Y50 Z0.2 F3000\n"
+bgcode_bytes = gl.write_bgcode(gcode_text)
+```
+
+> **Note:** `write_bgcode` produces a valid BGCode v2 file with DEFLATE-compressed G-code.
+> The same Heatshrink limitation described in [Slicer and vendor compatibility](#slicer-and-vendor-compatibility)
+> applies to reading: only DEFLATE-compressed and uncompressed G-code blocks can be decoded.
+
+---
+
+## PrusaSlicer CLI integration
+
+A set of helpers wraps the PrusaSlicer command-line interface for scripted slicing workflows.
+
+### Discover the executable
+
+```python
+import gcode_lib as gl
+
+exe = gl.find_prusaslicer_executable()
+print(exe)
+# e.g. /Applications/PrusaSlicer.app/Contents/MacOS/prusa-slicer-console
+```
+
+`find_prusaslicer_executable` searches `PATH` and a list of well-known install locations.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `prefer_console` | `True` | Prefer the headless console binary over the GUI binary |
+| `explicit_path` | `None` | Use this exact path (skip discovery) |
+
+Raises `FileNotFoundError` if no binary can be found.
+
+### Probe capabilities
+
+```python
+caps = gl.probe_prusaslicer_capabilities(exe)
+print(caps.version_text)           # "PrusaSlicer-2.8.0+win64 ..."
+print(caps.has_export_gcode)       # True
+print(caps.has_load_config)        # True
+print(caps.supports_binary_gcode)  # True / False
+print(caps.has_help_fff)           # True / False
+```
+
+### Run with arbitrary arguments
+
+```python
+result = gl.run_prusaslicer(exe, ["--version"])
+if result.ok:
+    print(result.stdout)
+else:
+    print("Error:", result.stderr)
+    print("Return code:", result.returncode)
+```
+
+`run_prusaslicer` captures stdout and stderr, enforces a configurable timeout, and always
+returns a `RunResult` — it never raises on non-zero exit codes.
+
+### Slice a single model
+
+```python
+req = gl.SliceRequest(
+    input_path="model.stl",
+    output_path="model.gcode",
+    config_ini="my_profile.ini",   # path to a PrusaSlicer .ini config, or None for defaults
+)
+
+result = gl.slice_model(exe, req)
+if not result.ok:
+    raise RuntimeError(f"Slice failed:\n{result.stderr}")
+
+print(f"Sliced OK → {req.output_path}")
+```
+
+```python
+# Add extra CLI flags (e.g. override layer height)
+req = gl.SliceRequest(
+    input_path="model.stl",
+    output_path="model_draft.gcode",
+    config_ini="base.ini",
+    extra_args=["--layer-height", "0.3"],
+)
+result = gl.slice_model(exe, req)
+```
+
+### Batch slicing
+
+`slice_batch` slices multiple STL files in parallel using a thread pool:
+
+```python
+import os
+
+stl_files = [
+    os.path.join("models", f)
+    for f in os.listdir("models")
+    if f.endswith(".stl")
+]
+
+results = gl.slice_batch(
+    exe,
+    inputs=stl_files,
+    output_dir="sliced/",
+    config_ini="my_profile.ini",
+    naming="{stem}.gcode",   # {stem} = input filename without extension
+    parallelism=4,           # up to 4 concurrent PrusaSlicer processes
+)
+
+for r in results:
+    status = "OK" if r.ok else "FAILED"
+    print(f"{status}: {r.cmd[-1]}")
+```
+
+The `naming` pattern supports `{stem}` (filename without extension) and `{name}` (full
+filename).  Output files are written to `output_dir`.
 
 ---
 
@@ -560,6 +1094,13 @@ read correctly regardless of GCode block compression type.
 | `DEFAULT_ARC_MAX_DEG` | `5.0` | Max sweep angle (°) per arc segment |
 | `DEFAULT_XY_DECIMALS` | `3` | Output decimal places for X/Y |
 | `DEFAULT_OTHER_DECIMALS` | `5` | Output decimal places for E/F/Z/I/J/K |
+
+### Presets
+
+| Name | Type | Description |
+|---|---|---|
+| `PRINTER_PRESETS` | `Dict[str, Dict]` | Bed and Z dimensions for Prusa printers (`COREONE`, `MK4`, `MK3S`, `MINI`, `XL`) |
+| `FILAMENT_PRESETS` | `Dict[str, Dict]` | Hotend/bed temperatures and retraction for common materials (`PLA`, `PETG`, `ASA`, `TPU`, `ABS`) |
 
 ### Data classes
 
@@ -635,6 +1176,47 @@ read correctly regardless of GCode block compression type.
 | `height` | Image height in pixels |
 | `format_code` | Raw format code from bgcode block params |
 
+#### `OOBHit`
+
+| Attribute | Type | Description |
+|---|---|---|
+| `line_number` | `int` | 0-based index of the offending line in the input list |
+| `x` | `float` | X coordinate of the out-of-bounds point |
+| `y` | `float` | Y coordinate of the out-of-bounds point |
+| `distance_outside` | `float` | Distance (mm) from the point to the nearest polygon edge |
+
+#### `PrusaSlicerCapabilities`
+
+| Attribute | Type | Description |
+|---|---|---|
+| `version_text` | `str` | Raw version string from `--version` |
+| `has_export_gcode` | `bool` | `--export-gcode` flag is available |
+| `has_load_config` | `bool` | `--load` (config) flag is available |
+| `has_help_fff` | `bool` | `--help-fff` flag is available |
+| `supports_binary_gcode` | `bool` | Binary G-code output is supported |
+| `raw_help` | `str` | Full output of `--help` |
+| `raw_help_fff` | `str \| None` | Output of `--help-fff`, or `None` |
+
+#### `RunResult`
+
+| Attribute | Type | Description |
+|---|---|---|
+| `cmd` | `List[str]` | The command that was executed |
+| `returncode` | `int` | Process exit code |
+| `stdout` | `str` | Captured standard output |
+| `stderr` | `str` | Captured standard error |
+| `ok` | `bool` (property) | `True` if `returncode == 0` |
+
+#### `SliceRequest`
+
+| Attribute | Type | Default | Description |
+|---|---|---|---|
+| `input_path` | `str` | — | Path to the input model file (STL, 3MF, …) |
+| `output_path` | `str` | — | Path for the output G-code file |
+| `config_ini` | `str \| None` | — | Path to a PrusaSlicer `.ini` config, or `None` |
+| `printer_technology` | `str` | `"FFF"` | Printer technology flag |
+| `extra_args` | `List[str]` | `[]` | Additional CLI arguments appended to the command |
+
 ### Functions
 
 #### I/O
@@ -644,6 +1226,8 @@ load(path: str) -> GCodeFile
 save(gf: GCodeFile, path: str) -> None
 from_text(text: str) -> GCodeFile
 to_text(gf: GCodeFile) -> str
+read_bgcode(data: bytes) -> GCodeFile
+write_bgcode(ascii_gcode: str, thumbnails=None) -> bytes
 ```
 
 #### Parsing
@@ -682,6 +1266,21 @@ apply_skew(lines, skew_deg, y_ref=0.0,
 translate_xy(lines, dx, dy,
              xy_decimals=3, other_decimals=5,
              initial_state=None) -> List[GCodeLine]
+
+to_absolute_xy(lines, initial_state=None,
+               xy_decimals=3, other_decimals=5) -> List[GCodeLine]
+
+translate_xy_allow_arcs(lines, dx, dy,
+                        xy_decimals=3, other_decimals=5,
+                        initial_state=None) -> List[GCodeLine]
+
+apply_xy_transform_by_layer(lines, transform_fn,
+                            z_min=None, z_max=None,
+                            xy_decimals=3, other_decimals=5,
+                            initial_state=None) -> List[GCodeLine]
+
+recenter_to_bed(lines, bed_min_x, bed_max_x, bed_min_y, bed_max_y,
+                margin=0.0, mode="center") -> List[GCodeLine]
 ```
 
 #### Statistics
@@ -692,6 +1291,59 @@ compute_bounds(lines, extruding_only=False, include_arcs=True,
                initial_state=None) -> Bounds
 
 compute_stats(lines, initial_state=None) -> GCodeStats
+```
+
+#### Layer iteration
+
+```
+iter_layers(lines, initial_state=None) -> Iterator[Tuple[float, List[GCodeLine]]]
+```
+
+#### Bed validation
+
+```
+find_oob_moves(lines, bed_polygon,
+               initial_state=None) -> List[OOBHit]
+
+max_oob_distance(lines, bed_polygon,
+                 initial_state=None) -> float
+```
+
+#### Transform analysis
+
+```
+analyze_xy_transform(lines, transform_fn,
+                     initial_state=None) -> Dict[str, Any]
+```
+
+Return keys: `max_dx`, `max_dy`, `max_displacement`, `line_number`, `move_count`.
+
+#### Template and thumbnail
+
+```
+render_template(template_text: str, variables: dict) -> str
+
+encode_thumbnail_comment_block(width: int, height: int,
+                               png_bytes: bytes) -> str
+```
+
+#### PrusaSlicer CLI
+
+```
+find_prusaslicer_executable(prefer_console=True,
+                            explicit_path=None) -> str
+
+probe_prusaslicer_capabilities(exe: str) -> PrusaSlicerCapabilities
+
+run_prusaslicer(exe: str, args: List[str],
+                timeout_s: int = 600) -> RunResult
+
+slice_model(exe: str, req: SliceRequest) -> RunResult
+
+slice_batch(exe: str, inputs: List[str], output_dir: str,
+            config_ini: str | None,
+            naming: str = "{stem}.gcode",
+            parallelism: int = 1) -> List[RunResult]
 ```
 
 #### Formatting helpers
@@ -707,15 +1359,19 @@ replace_or_append(code: str, axis: str, val: float,
 
 ## Limitations
 
-- **Relative XY (G91) transforms are not supported.**  `apply_xy_transform`, `apply_skew`, and
-  `translate_xy` raise `ValueError` if a G0/G1 move with X/Y words is encountered while the
-  modal state is in G91 mode.  Linearize arcs first and confirm G90 is active throughout, or
-  pre-convert relative segments to absolute before calling transforms.
+- **G91 relative XY in transforms:** `apply_xy_transform`, `apply_skew`, `translate_xy`, and
+  `translate_xy_allow_arcs` raise `ValueError` if a `G0`/`G1` move with X/Y words is encountered
+  while the modal state is in G91 mode.  Use `to_absolute_xy()` to convert relative segments to
+  absolute before transforming — see [G91 and relative-mode handling](#g91-and-relative-mode-handling).
 - **Arc endpoint tracking only.**  `advance_state` updates position to the G2/G3 endpoint but
   does not interpolate intermediate arc positions.  Use `linearize_arcs` if you need full path
   coverage.
+- **No helical arc support.**  G2/G3 with a simultaneous Z move (helical arcs) are not supported.
+  All arcs are treated as planar (XY only).
 - **No G-code validation.**  The library parses and transforms; it does not validate that the
-  resulting G-code is printable or within machine limits.
+  resulting G-code is printable or within machine limits.  Use `find_oob_moves` for basic bed
+  boundary checking.
+- **Heatshrink BGCode decompression not supported.**  See [Slicer and vendor compatibility](#slicer-and-vendor-compatibility).
 
 ---
 
@@ -725,5 +1381,6 @@ replace_or_append(code: str, axis: str, val: float,
 python -m pytest tests/ -v
 ```
 
-Tests cover I/O, parsing, state tracking, statistics, and all transform functions using only
-stdlib and pytest.
+Tests cover I/O, parsing, state tracking, statistics, all transform functions, bed placement,
+layer iteration, presets, template rendering, thumbnail encoding, BGCode round-trips, and
+PrusaSlicer CLI helpers — using only stdlib and pytest.

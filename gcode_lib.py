@@ -33,14 +33,19 @@ Design constraints
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import math
 import os
 import re
+import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 import zlib
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from pathlib import Path
+from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1389,3 +1394,1117 @@ def compute_stats(
     stats.z_heights = seen_z
     stats.feedrates  = seen_f
     return stats
+
+
+# ===========================================================================
+# EXTENSIONS — Planar G-Code Toolkit
+# (Engineering Master Document, Hyiger/gcode-lib, sections 4–9)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Additional constants
+# ---------------------------------------------------------------------------
+
+# Minimal valid .bgcode v2 file header: magic + version(uint32) + checksum_type(uint16)
+_BGCODE_VERSION = 2
+_BGCODE_CHECKSUM_CRC32 = 1
+_BGCODE_FILE_HDR_V2: bytes = (
+    _BGCODE_MAGIC
+    + struct.pack("<I", _BGCODE_VERSION)
+    + struct.pack("<H", _BGCODE_CHECKSUM_CRC32)
+)
+
+# ---------------------------------------------------------------------------
+# §4.1 — to_absolute_xy: G91 → G90 normalisation
+# ---------------------------------------------------------------------------
+
+def to_absolute_xy(
+    lines: List[GCodeLine],
+    initial_state: Optional[ModalState] = None,
+    *,
+    xy_decimals: int = DEFAULT_XY_DECIMALS,
+    other_decimals: int = DEFAULT_OTHER_DECIMALS,
+) -> List[GCodeLine]:
+    """Convert all G91 (relative XY) motion to absolute G90 equivalents.
+
+    G91 mode-switch lines are removed from the output.  Relative G0/G1 and
+    G2/G3 moves are rewritten with absolute X/Y/Z coordinates computed from
+    the running modal state.  Z, E, F, I, J, K words are handled correctly:
+
+    * Z is converted to absolute along with X/Y.
+    * E and F are preserved verbatim (relative E / M83 mode is untouched).
+    * I/J for arcs are left as-is; they are arc-centre *offsets* from the
+      current position and do not need conversion when the mode is G91.1
+      (the default).
+
+    The returned list is safe to pass directly to :func:`apply_xy_transform`,
+    :func:`apply_skew`, or :func:`translate_xy`.
+
+    Parameters
+    ----------
+    lines:         Input G-code line list (may mix G90 and G91 sections).
+    initial_state: Optional starting :class:`ModalState`.
+    xy_decimals:   Decimal places for output X/Y values.
+    other_decimals: Decimal places for output Z values.
+    """
+    result: List[GCodeLine] = []
+    state = initial_state.copy() if initial_state else ModalState()
+    found_g91 = False
+
+    for line in lines:
+        cmd = line.command
+
+        # Drop G91 mode-switch lines; everything in the output is absolute.
+        if cmd == "G91":
+            found_g91 = True
+            advance_state(state, line)
+            continue
+
+        # Convert relative move/arc endpoints to absolute.
+        if (line.is_move or line.is_arc) and not state.abs_xy:
+            words = line.words
+            x_abs = state.x + words.get("X", 0.0)
+            y_abs = state.y + words.get("Y", 0.0)
+            z_abs = state.z + words.get("Z", 0.0)
+
+            code, comment = split_comment(line.raw)
+            new_code = code
+            if "X" in words:
+                new_code = replace_or_append(new_code, "X", x_abs, xy_decimals, other_decimals)
+            if "Y" in words:
+                new_code = replace_or_append(new_code, "Y", y_abs, xy_decimals, other_decimals)
+            if "Z" in words:
+                new_code = replace_or_append(new_code, "Z", z_abs, xy_decimals, other_decimals)
+            # I, J, K, E, F — preserved verbatim.
+
+            new_raw = new_code.rstrip() + ("" if not comment else " " + comment.lstrip())
+            new_words = dict(words)
+            if "X" in words: new_words["X"] = x_abs
+            if "Y" in words: new_words["Y"] = y_abs
+            if "Z" in words: new_words["Z"] = z_abs
+
+            result.append(GCodeLine(raw=new_raw, command=cmd, words=new_words, comment=comment))
+
+            # Update state with the absolute position so subsequent lines
+            # continue to track correctly.
+            state.x = x_abs
+            state.y = y_abs
+            state.z = z_abs
+            if "E" in words:
+                state.e = words["E"] if state.abs_e else state.e + words["E"]
+            if "F" in words:
+                state.f = words["F"]
+        else:
+            result.append(line)
+            advance_state(state, line)
+
+    # If we dropped any G91 lines, prepend an explicit G90 so printers that
+    # power on in relative mode are handled safely.
+    if found_g91:
+        result.insert(0, parse_line("G90"))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# §4.2 — translate_xy_allow_arcs: translate without prior linearization
+# ---------------------------------------------------------------------------
+
+def translate_xy_allow_arcs(
+    lines: List[GCodeLine],
+    dx: float,
+    dy: float,
+    *,
+    xy_decimals: int = DEFAULT_XY_DECIMALS,
+    other_decimals: int = DEFAULT_OTHER_DECIMALS,
+    initial_state: Optional[ModalState] = None,
+) -> List[GCodeLine]:
+    """Translate XY by ``(dx, dy)``, handling G2/G3 arcs natively.
+
+    Unlike :func:`translate_xy`, this function does **not** require arcs to
+    be linearized first.  For a pure translation:
+
+    * G0/G1 endpoints are shifted by ``(dx, dy)``.
+    * G2/G3 endpoints are shifted by ``(dx, dy)``.
+    * I/J offsets are **unchanged** when using G91.1 (relative arc centre,
+      the default), because I/J are offsets from the (already-shifted)
+      current position.
+    * I/J are also shifted by ``(dx, dy)`` when using G90.1 (absolute arc
+      centre), since the absolute centre moves with the translation.
+
+    Raises :class:`ValueError` if a move with X/Y words is encountered while
+    in G91 (relative XY) mode.  Call :func:`to_absolute_xy` first if the
+    file uses G91 sections.
+
+    Parameters
+    ----------
+    lines:         Input G-code line list.
+    dx, dy:        Translation offsets in mm.
+    xy_decimals:   Decimal places for X/Y output.
+    other_decimals: Decimal places for other axes.
+    initial_state: Optional starting :class:`ModalState`.
+    """
+    result: List[GCodeLine] = []
+    state = initial_state.copy() if initial_state else ModalState()
+
+    for line in lines:
+        words = line.words
+        has_xy = "X" in words or "Y" in words
+
+        if (line.is_move or line.is_arc) and has_xy:
+            if not state.abs_xy:
+                raise ValueError(
+                    "translate_xy_allow_arcs: relative XY (G91) is not supported. "
+                    "Call to_absolute_xy() first."
+                )
+
+            code, comment = split_comment(line.raw)
+            new_code = code
+
+            if "X" in words:
+                new_code = replace_or_append(
+                    new_code, "X", words["X"] + dx, xy_decimals, other_decimals
+                )
+            if "Y" in words:
+                new_code = replace_or_append(
+                    new_code, "Y", words["Y"] + dy, xy_decimals, other_decimals
+                )
+
+            new_words = dict(words)
+            if "X" in words: new_words["X"] = words["X"] + dx
+            if "Y" in words: new_words["Y"] = words["Y"] + dy
+
+            # For arcs with absolute arc-centre mode (G90.1), I/J must also shift.
+            if line.is_arc and not state.ij_relative:
+                if "I" in words:
+                    new_words["I"] = words["I"] + dx
+                    new_code = replace_or_append(
+                        new_code, "I", new_words["I"], xy_decimals, other_decimals
+                    )
+                if "J" in words:
+                    new_words["J"] = words["J"] + dy
+                    new_code = replace_or_append(
+                        new_code, "J", new_words["J"], xy_decimals, other_decimals
+                    )
+
+            new_raw = new_code.rstrip() + ("" if not comment else " " + comment.lstrip())
+
+            result.append(GCodeLine(
+                raw=new_raw, command=line.command, words=new_words, comment=comment
+            ))
+        else:
+            result.append(line)
+
+        advance_state(state, line)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# §4.3 — Out-of-bounds detection
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OOBHit:
+    """A move endpoint that lies outside the allowed bed polygon.
+
+    Attributes
+    ----------
+    line_number:      0-based index of the offending line in the input list.
+    x, y:             Absolute coordinates of the out-of-bounds point.
+    distance_outside: Distance (mm) from the point to the nearest polygon edge.
+    """
+    line_number: int
+    x: float
+    y: float
+    distance_outside: float
+
+
+def _point_in_polygon(x: float, y: float, polygon: List[Tuple[float, float]]) -> bool:
+    """Ray-casting point-in-polygon test (Jordan curve theorem)."""
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi + EPS) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _dist_to_segment(
+    px: float, py: float,
+    ax: float, ay: float,
+    bx: float, by: float,
+) -> float:
+    """Minimum distance from point ``(px, py)`` to line segment ``(ax,ay)–(bx,by)``."""
+    dx, dy = bx - ax, by - ay
+    len_sq = dx * dx + dy * dy
+    if len_sq < EPS * EPS:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len_sq))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _min_dist_to_polygon_boundary(
+    x: float, y: float, polygon: List[Tuple[float, float]]
+) -> float:
+    """Minimum distance from ``(x, y)`` to any edge of *polygon*."""
+    n = len(polygon)
+    min_d = float("inf")
+    for i in range(n):
+        ax, ay = polygon[i]
+        bx, by = polygon[(i + 1) % n]
+        d = _dist_to_segment(x, y, ax, ay, bx, by)
+        if d < min_d:
+            min_d = d
+    return min_d
+
+
+def find_oob_moves(
+    lines: List[GCodeLine],
+    bed_polygon: List[Tuple[float, float]],
+    initial_state: Optional[ModalState] = None,
+) -> List[OOBHit]:
+    """Return all G0/G1 move endpoints that fall outside *bed_polygon*.
+
+    *bed_polygon* is a list of ``(x, y)`` vertices defining the printable
+    area (e.g. ``[(0,0),(250,0),(250,220),(0,220)]`` for a 250×220 mm bed).
+    The polygon is treated as closed (last vertex connects back to first).
+
+    Parameters
+    ----------
+    lines:       G-code line list (should be in G90 mode).
+    bed_polygon: Convex or concave polygon as ``[(x,y), …]``.
+    initial_state: Optional starting :class:`ModalState`.
+    """
+    hits: List[OOBHit] = []
+    state = initial_state.copy() if initial_state else ModalState()
+
+    for idx, line in enumerate(lines):
+        if line.is_move and ("X" in line.words or "Y" in line.words):
+            if state.abs_xy:
+                x = line.words.get("X", state.x)
+                y = line.words.get("Y", state.y)
+            else:
+                x = state.x + line.words.get("X", 0.0)
+                y = state.y + line.words.get("Y", 0.0)
+
+            if not _point_in_polygon(x, y, bed_polygon):
+                dist = _min_dist_to_polygon_boundary(x, y, bed_polygon)
+                hits.append(OOBHit(line_number=idx, x=x, y=y, distance_outside=dist))
+
+        advance_state(state, line)
+
+    return hits
+
+
+def max_oob_distance(
+    lines: List[GCodeLine],
+    bed_polygon: List[Tuple[float, float]],
+    initial_state: Optional[ModalState] = None,
+) -> float:
+    """Return the maximum out-of-bounds distance across all moves.
+
+    Returns ``0.0`` if all moves are within the bed polygon.
+    """
+    hits = find_oob_moves(lines, bed_polygon, initial_state)
+    return max((h.distance_outside for h in hits), default=0.0)
+
+
+# ---------------------------------------------------------------------------
+# §4.4 — recenter_to_bed
+# ---------------------------------------------------------------------------
+
+def recenter_to_bed(
+    lines: List[GCodeLine],
+    bed_min_x: float,
+    bed_max_x: float,
+    bed_min_y: float,
+    bed_max_y: float,
+    margin: float = 0.0,
+    mode: str = "center",
+    *,
+    xy_decimals: int = DEFAULT_XY_DECIMALS,
+    other_decimals: int = DEFAULT_OTHER_DECIMALS,
+    initial_state: Optional[ModalState] = None,
+) -> List[GCodeLine]:
+    """Centre or scale a print to fit within the specified bed extents.
+
+    Parameters
+    ----------
+    lines:     G-code line list (arcs should be linearized before calling
+               in ``"fit"`` mode; ``"center"`` handles arcs natively).
+    bed_min_x, bed_max_x, bed_min_y, bed_max_y:
+               Bed bounds in mm.
+    margin:    Clearance (mm) to leave around the scaled/centred print.
+    mode:      ``"center"`` — translate the print centre to the bed centre
+               (no scaling, arcs preserved).
+               ``"fit"`` — uniformly scale the print to fill the available
+               bed space (arcs must be linearized beforehand).
+    xy_decimals, other_decimals: Output decimal precision.
+    initial_state: Optional starting :class:`ModalState`.
+
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not ``"center"`` or ``"fit"``.
+    ValueError
+        If the print has zero width or height (in ``"fit"`` mode).
+    """
+    if mode not in ("center", "fit"):
+        raise ValueError(f"recenter_to_bed: mode must be 'center' or 'fit', got {mode!r}")
+
+    bounds = compute_bounds(lines, initial_state=initial_state)
+    if not bounds.valid:
+        return list(lines)
+
+    bed_cx = 0.5 * (bed_min_x + bed_max_x)
+    bed_cy = 0.5 * (bed_min_y + bed_max_y)
+
+    if mode == "center":
+        dx = bed_cx - bounds.center_x
+        dy = bed_cy - bounds.center_y
+        return translate_xy_allow_arcs(
+            lines, dx, dy,
+            xy_decimals=xy_decimals,
+            other_decimals=other_decimals,
+            initial_state=initial_state,
+        )
+
+    # "fit" mode — uniform scale + translate.
+    avail_x = (bed_max_x - bed_min_x) - 2.0 * margin
+    avail_y = (bed_max_y - bed_min_y) - 2.0 * margin
+    if avail_x <= 0 or avail_y <= 0:
+        raise ValueError("recenter_to_bed: bed area after margin is zero or negative")
+    if bounds.width < EPS or bounds.height < EPS:
+        raise ValueError(
+            "recenter_to_bed: print has zero width or height — cannot fit-scale"
+        )
+
+    scale = min(avail_x / bounds.width, avail_y / bounds.height)
+    px_c, py_c = bounds.center_x, bounds.center_y
+
+    def _scale_to_bed(x: float, y: float) -> Tuple[float, float]:
+        xs = bed_cx + (x - px_c) * scale
+        ys = bed_cy + (y - py_c) * scale
+        return xs, ys
+
+    return apply_xy_transform(
+        lines, _scale_to_bed,
+        xy_decimals=xy_decimals,
+        other_decimals=other_decimals,
+        initial_state=initial_state,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §4.5 — analyze_xy_transform: dry-run analysis
+# ---------------------------------------------------------------------------
+
+def analyze_xy_transform(
+    lines: List[GCodeLine],
+    transform_fn: Callable[[float, float], Tuple[float, float]],
+    initial_state: Optional[ModalState] = None,
+) -> Dict[str, object]:
+    """Analyse the effect of *transform_fn* without modifying any lines.
+
+    Iterates every G0/G1 move, applies *transform_fn*, and records the
+    per-point displacement ``√(dx²+dy²)``.
+
+    Returns a dict with keys:
+
+    ``max_dx``
+        Maximum absolute change in X across all move endpoints (mm).
+    ``max_dy``
+        Maximum absolute change in Y across all move endpoints (mm).
+    ``max_displacement``
+        Maximum Euclidean displacement ``√(Δx²+Δy²)`` (mm).
+    ``line_number``
+        0-based index of the line with the maximum displacement (or
+        ``-1`` if no moves were found).
+    ``move_count``
+        Number of G0/G1 moves examined.
+    """
+    max_dx = 0.0
+    max_dy = 0.0
+    max_disp = 0.0
+    worst_line = -1
+    move_count = 0
+
+    state = initial_state.copy() if initial_state else ModalState()
+
+    for idx, line in enumerate(lines):
+        if line.is_move and ("X" in line.words or "Y" in line.words) and state.abs_xy:
+            x_orig = line.words.get("X", state.x)
+            y_orig = line.words.get("Y", state.y)
+            x_new, y_new = transform_fn(x_orig, y_orig)
+
+            adx = abs(x_new - x_orig)
+            ady = abs(y_new - y_orig)
+            disp = math.hypot(adx, ady)
+            move_count += 1
+
+            if adx > max_dx: max_dx = adx
+            if ady > max_dy: max_dy = ady
+            if disp > max_disp:
+                max_disp = disp
+                worst_line = idx
+
+        advance_state(state, line)
+
+    return {
+        "max_dx": max_dx,
+        "max_dy": max_dy,
+        "max_displacement": max_disp,
+        "line_number": worst_line,
+        "move_count": move_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# §4.6 — Layer iterator and per-layer transform
+# ---------------------------------------------------------------------------
+
+def iter_layers(
+    lines: List[GCodeLine],
+    initial_state: Optional[ModalState] = None,
+) -> Iterator[Tuple[float, List[GCodeLine]]]:
+    """Yield ``(z_height, layer_lines)`` for each distinct Z level.
+
+    A new layer group is started whenever a move changes the current Z height.
+    The line that causes the Z change is included at the **start** of the new
+    group (i.e. it belongs to the layer it moves *to*, not the one it left).
+    The final group is always yielded, even if no Z change follows it.
+
+    The first group has ``z_height`` equal to the initial state's Z (default
+    0.0), and contains all lines before the first Z change.
+
+    Parameters
+    ----------
+    lines:         Full list of :class:`GCodeLine` objects.
+    initial_state: Optional starting :class:`ModalState`.
+    """
+    state = initial_state.copy() if initial_state else ModalState()
+    current_z: float = state.z
+    current_group: List[GCodeLine] = []
+
+    for line in lines:
+        # Peek at whether this line will change Z.
+        z_changes = False
+        next_z = current_z
+        if line.is_move and "Z" in line.words:
+            next_z = line.words["Z"] if state.abs_xy else state.z + line.words["Z"]
+            if abs(next_z - current_z) > EPS:
+                z_changes = True
+
+        if z_changes and current_group:
+            yield (current_z, current_group)
+            current_group = []
+            current_z = next_z
+
+        current_group.append(line)
+        advance_state(state, line)
+
+    if current_group:
+        yield (current_z, current_group)
+
+
+def apply_xy_transform_by_layer(
+    lines: List[GCodeLine],
+    transform_fn: Callable[[float, float], Tuple[float, float]],
+    z_min: Optional[float] = None,
+    z_max: Optional[float] = None,
+    *,
+    xy_decimals: int = DEFAULT_XY_DECIMALS,
+    other_decimals: int = DEFAULT_OTHER_DECIMALS,
+    initial_state: Optional[ModalState] = None,
+) -> List[GCodeLine]:
+    """Apply *transform_fn* only to layers within ``[z_min, z_max]``.
+
+    Layers whose Z height is below *z_min* or above *z_max* are passed
+    through unchanged.  Omitting either bound means no restriction on that
+    end (e.g. ``z_min=None, z_max=5.0`` transforms all layers up to 5 mm).
+
+    Arcs (G2/G3) must be linearized first; relative XY (G91) raises
+    :class:`ValueError`.
+
+    Parameters
+    ----------
+    lines:        G-code line list.
+    transform_fn: ``(x, y) -> (x', y')`` callable.
+    z_min, z_max: Optional Z range filter (inclusive).
+    """
+    result: List[GCodeLine] = []
+    state = initial_state.copy() if initial_state else ModalState()
+    current_z: float = state.z
+
+    for line in lines:
+        # Determine current layer's Z before state update.
+        in_range = (
+            (z_min is None or current_z >= z_min - EPS) and
+            (z_max is None or current_z <= z_max + EPS)
+        )
+
+        if in_range and line.is_move and ("X" in line.words or "Y" in line.words):
+            if not state.abs_xy:
+                raise ValueError(
+                    "apply_xy_transform_by_layer: relative XY (G91) is not supported. "
+                    "Call to_absolute_xy() first."
+                )
+            x_orig = line.words.get("X", state.x)
+            y_orig = line.words.get("Y", state.y)
+            x_new, y_new = transform_fn(x_orig, y_orig)
+
+            code, comment = split_comment(line.raw)
+            new_code = replace_or_append(code, "X", x_new, xy_decimals, other_decimals)
+            new_code = replace_or_append(new_code, "Y", y_new, xy_decimals, other_decimals)
+            for ax in ("Z", "E", "F"):
+                if ax in line.words:
+                    new_code = replace_or_append(
+                        new_code, ax, line.words[ax], xy_decimals, other_decimals
+                    )
+
+            new_raw = new_code.rstrip() + ("" if not comment else " " + comment.lstrip())
+            new_words = dict(line.words)
+            new_words["X"] = x_new
+            new_words["Y"] = y_new
+            result.append(GCodeLine(
+                raw=new_raw, command=line.command, words=new_words, comment=comment
+            ))
+
+            # Update state with the ORIGINAL coordinates so subsequent
+            # layer tracking and relative calculations remain correct.
+            state.x = x_orig
+            state.y = y_orig
+            if "Z" in line.words:
+                state.z = line.words["Z"]
+                current_z = state.z
+            if "E" in line.words:
+                state.e = line.words["E"] if state.abs_e else state.e + line.words["E"]
+            if "F" in line.words:
+                state.f = line.words["F"]
+        else:
+            result.append(line)
+            prev_z = state.z
+            advance_state(state, line)
+            if abs(state.z - prev_z) > EPS:
+                current_z = state.z
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# §5 — Printer and filament presets
+# ---------------------------------------------------------------------------
+
+PRINTER_PRESETS: Dict[str, Dict[str, float]] = {
+    "COREONE": {
+        "bed_x": 250.0,
+        "bed_y": 220.0,
+        "max_z": 250.0,
+    },
+    "MK4": {
+        "bed_x": 250.0,
+        "bed_y": 210.0,
+        "max_z": 220.0,
+    },
+    "MK3S": {
+        "bed_x": 250.0,
+        "bed_y": 210.0,
+        "max_z": 210.0,
+    },
+    "MINI": {
+        "bed_x": 180.0,
+        "bed_y": 180.0,
+        "max_z": 180.0,
+    },
+    "XL": {
+        "bed_x": 360.0,
+        "bed_y": 360.0,
+        "max_z": 360.0,
+    },
+}
+"""Printable area (mm) for common Prusa printers.
+
+Keys: ``bed_x``, ``bed_y``, ``max_z``.  Origin is at ``(0, 0)``.
+"""
+
+FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
+    "PLA": {
+        "hotend": 215,
+        "bed": 60,
+        "fan": 100,
+        "retract": 0.8,
+    },
+    "PETG": {
+        "hotend": 240,
+        "bed": 80,
+        "fan": 40,
+        "retract": 0.8,
+    },
+    "ASA": {
+        "hotend": 260,
+        "bed": 100,
+        "fan": 20,
+        "retract": 0.8,
+    },
+    "TPU": {
+        "hotend": 230,
+        "bed": 50,
+        "fan": 50,
+        "retract": 1.5,
+    },
+    "ABS": {
+        "hotend": 255,
+        "bed": 100,
+        "fan": 20,
+        "retract": 0.8,
+    },
+}
+"""Common filament temperature and retraction settings.
+
+Keys: ``hotend`` (°C), ``bed`` (°C), ``fan`` (0–100 %), ``retract`` (mm).
+"""
+
+
+# ---------------------------------------------------------------------------
+# §6 — Template rendering
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_VAR_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+"""Matches only lowercase ``{identifier}`` placeholders."""
+
+
+def render_template(template_text: str, variables: Dict[str, object]) -> str:
+    """Substitute ``{key}`` placeholders in *template_text* from *variables*.
+
+    Only simple lowercase identifiers of the form ``{[a-z][a-z0-9_]*}`` are
+    substituted.  Placeholders with no matching key are left unchanged.
+    PrusaSlicer conditional syntax (``{if …}``, ``{elsif …}``, etc.) and
+    any placeholder containing uppercase letters or special characters are
+    never touched, making this safe to use on raw slicer output.
+
+    Parameters
+    ----------
+    template_text: String that may contain ``{key}`` placeholders.
+    variables:     Mapping of placeholder name → value.  Values are
+                   converted to ``str`` before substitution.
+
+    Example
+    -------
+    >>> render_template("M104 S{temp}", {"temp": 215})
+    'M104 S215'
+    >>> render_template("{if layer == 0}G28{endif}", {})
+    '{if layer == 0}G28{endif}'
+    """
+    def _replace(m: re.Match) -> str:  # type: ignore[type-arg]
+        key = m.group(1)
+        if key in variables:
+            return str(variables[key])
+        return m.group(0)
+
+    return _TEMPLATE_VAR_RE.sub(_replace, template_text)
+
+
+# ---------------------------------------------------------------------------
+# §7 — Thumbnail comment block (public API)
+# ---------------------------------------------------------------------------
+
+def encode_thumbnail_comment_block(
+    width: int,
+    height: int,
+    png_bytes: bytes,
+) -> str:
+    """Encode a PNG image as a PrusaSlicer-compatible thumbnail comment block.
+
+    Returns a multi-line string suitable for prepending to a plain-text
+    ``.gcode`` file.  The format is::
+
+        ; thumbnail begin WxH <b64_length>
+        ; <base64 data …>
+        ; thumbnail end
+
+    This is the same format that PrusaSlicer, OrcaSlicer, SuperSlicer, and
+    Cura embed in exported ``.gcode`` files.
+
+    Parameters
+    ----------
+    width:     Image width in pixels.
+    height:    Image height in pixels.
+    png_bytes: Raw PNG image data (any size).
+    """
+    params = struct.pack("<HHH", width, height, _IMG_PNG)
+    thumb = Thumbnail(params=params, data=png_bytes, _raw_block=b"")
+    return _render_text_thumbnails([thumb])
+
+
+# ---------------------------------------------------------------------------
+# §8 — BGCode public I/O API
+# ---------------------------------------------------------------------------
+
+def read_bgcode(data: bytes) -> "GCodeFile":
+    """Load a :class:`GCodeFile` from raw Prusa ``.bgcode`` bytes.
+
+    Equivalent to :func:`load` for binary data already in memory.
+
+    Raises :class:`ValueError` for invalid, truncated, or unsupported files.
+    """
+    return _load_bgcode(data)
+
+
+def write_bgcode(
+    ascii_gcode: str,
+    thumbnails: Optional[List[Thumbnail]] = None,
+) -> bytes:
+    """Serialise ASCII G-code (and optional thumbnails) to ``.bgcode`` bytes.
+
+    Creates a minimal but spec-compliant Prusa BGCode v2 file.  Thumbnail
+    blocks are written before the GCode block, matching the layout produced
+    by PrusaSlicer.
+
+    Parameters
+    ----------
+    ascii_gcode: Plain G-code text to embed.
+    thumbnails:  Optional list of :class:`Thumbnail` objects.  Thumbnails
+                 that have a ``_raw_block`` (i.e. from a previously loaded
+                 ``.bgcode`` file) are embedded verbatim for lossless
+                 round-trips; others are serialised as uncompressed blocks.
+
+    Returns
+    -------
+    bytes
+        Raw ``.bgcode`` file data that can be written directly to disk.
+    """
+    thumb_blocks: List[bytes] = []
+    for thumb in (thumbnails or []):
+        if thumb._raw_block:
+            # Verbatim re-embed (lossless round-trip).
+            thumb_blocks.append(thumb._raw_block)
+        else:
+            # Build a fresh uncompressed thumbnail block.
+            payload = thumb.data
+            params  = thumb.params   # 6 bytes: width, height, fmt
+            hdr     = struct.pack("<HHI", _BLK_THUMBNAIL, _COMP_NONE, len(payload))
+            cksum   = zlib.crc32(hdr)    & 0xFFFFFFFF
+            cksum   = zlib.crc32(params, cksum) & 0xFFFFFFFF
+            cksum   = zlib.crc32(payload, cksum) & 0xFFFFFFFF
+            thumb_blocks.append(hdr + params + payload + struct.pack("<I", cksum))
+
+    return _bgcode_reassemble(_BGCODE_FILE_HDR_V2, thumb_blocks, ascii_gcode)
+
+
+# ---------------------------------------------------------------------------
+# §9 — PrusaSlicer CLI helpers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PrusaSlicerCapabilities:
+    """Detected PrusaSlicer executable capabilities.
+
+    Attributes
+    ----------
+    version_text:          Full version string as reported by ``--help``.
+    has_export_gcode:      ``--export-gcode`` / ``-g`` flag present.
+    has_load_config:       ``--load`` flag present.
+    has_help_fff:          ``--help-fff`` flag present.
+    supports_binary_gcode: ``--export-binary-gcode`` or ``--binary`` flag present.
+    raw_help:              Full output of ``prusa-slicer --help``.
+    raw_help_fff:          Output of ``prusa-slicer --help-fff``, or ``None``.
+    """
+    version_text: str
+    has_export_gcode: bool
+    has_load_config: bool
+    has_help_fff: bool
+    supports_binary_gcode: bool
+    raw_help: str
+    raw_help_fff: Optional[str]
+
+
+@dataclass
+class RunResult:
+    """Result of a PrusaSlicer CLI invocation.
+
+    Attributes
+    ----------
+    cmd:        Full command list that was executed.
+    returncode: Process exit code (0 = success).
+    stdout:     Captured standard output.
+    stderr:     Captured standard error.
+    """
+    cmd: List[str]
+    returncode: int
+    stdout: str
+    stderr: str
+
+    @property
+    def ok(self) -> bool:
+        """True if the process exited with code 0."""
+        return self.returncode == 0
+
+
+@dataclass
+class SliceRequest:
+    """Parameters for a single PrusaSlicer slicing operation.
+
+    Attributes
+    ----------
+    input_path:          Path to the 3-D model (``.stl``, ``.3mf``, …).
+    output_path:         Desired output G-code path.
+    config_ini:          Path to a PrusaSlicer ``.ini`` config file (or
+                         ``None`` to use the slicer's built-in defaults).
+    printer_technology:  ``"FFF"`` (default) or ``"SLA"``.
+    extra_args:          Additional raw CLI arguments passed verbatim.
+    """
+    input_path: str
+    output_path: str
+    config_ini: Optional[str]
+    printer_technology: str = "FFF"
+    extra_args: List[str] = field(default_factory=list)
+
+
+# Common executable names / paths searched by find_prusaslicer_executable.
+_PS_PATHS_MACOS: List[str] = [
+    "/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer-console",
+    "/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer",
+    "/Applications/Original Prusa Drivers/PrusaSlicer.app/Contents/MacOS/PrusaSlicer-console",
+]
+_PS_PATHS_WIN: List[str] = [
+    r"C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer-console.exe",
+    r"C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer.exe",
+    r"C:\Program Files (x86)\Prusa3D\PrusaSlicer\prusa-slicer-console.exe",
+    r"C:\Program Files (x86)\Prusa3D\PrusaSlicer\prusa-slicer.exe",
+]
+_PS_PATH_NAMES: List[str] = [
+    "prusa-slicer-console",
+    "prusa-slicer",
+    "PrusaSlicer-console",
+    "PrusaSlicer",
+    "prusaslicer",
+]
+
+
+def find_prusaslicer_executable(
+    prefer_console: bool = True,
+    explicit_path: Optional[str] = None,
+) -> str:
+    """Locate the PrusaSlicer executable on the current machine.
+
+    Search order
+    ------------
+    1. *explicit_path* if supplied (raises :class:`FileNotFoundError` if absent).
+    2. Platform-specific well-known installation paths.
+    3. ``PATH`` entries via :func:`shutil.which`.
+
+    Parameters
+    ----------
+    prefer_console: Prefer the ``PrusaSlicer-console`` / ``prusa-slicer-console``
+                    variant (no GUI) when both are available.
+    explicit_path:  Override all search logic with an exact path.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no PrusaSlicer executable can be located.
+    """
+    if explicit_path is not None:
+        if not os.path.isfile(explicit_path):
+            raise FileNotFoundError(
+                f"Explicit PrusaSlicer path not found: {explicit_path!r}"
+            )
+        return explicit_path
+
+    candidates: List[str] = []
+
+    if sys.platform == "darwin":
+        if prefer_console:
+            candidates += _PS_PATHS_MACOS
+        else:
+            candidates += _PS_PATHS_MACOS[::-1]
+    elif sys.platform == "win32":
+        if prefer_console:
+            candidates += _PS_PATHS_WIN
+        else:
+            candidates += _PS_PATHS_WIN[::-1]
+
+    # Search PATH (cross-platform fallback).
+    names = _PS_PATH_NAMES if prefer_console else _PS_PATH_NAMES[::-1]
+    for name in names:
+        found = shutil.which(name)
+        if found and found not in candidates:
+            candidates.append(found)
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    raise FileNotFoundError(
+        "PrusaSlicer executable not found.  Install PrusaSlicer or pass "
+        "`explicit_path` to find_prusaslicer_executable()."
+    )
+
+
+def probe_prusaslicer_capabilities(exe: str) -> PrusaSlicerCapabilities:
+    """Query a PrusaSlicer executable for its version and supported flags.
+
+    Runs ``exe --help`` (and ``exe --help-fff`` if available) and parses the
+    output to populate a :class:`PrusaSlicerCapabilities` object.
+
+    Parameters
+    ----------
+    exe: Path to the PrusaSlicer executable.
+
+    Raises
+    ------
+    RuntimeError
+        If ``--help`` times out or the executable cannot be run.
+    """
+    try:
+        r = subprocess.run(
+            [exe, "--help"],
+            capture_output=True, text=True, timeout=30,
+        )
+        raw_help = r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"PrusaSlicer --help timed out: {exe!r}")
+    except OSError as exc:
+        raise RuntimeError(f"Cannot run PrusaSlicer {exe!r}: {exc}") from exc
+
+    # Extract version string (e.g. "PrusaSlicer-2.8.0+").
+    v_match = re.search(
+        r"PrusaSlicer[- ]([0-9]+\.[0-9]+\.[0-9]+[^\s]*)", raw_help, re.IGNORECASE
+    )
+    version_text = v_match.group(0) if v_match else "unknown"
+
+    has_export_gcode   = "--export-gcode" in raw_help or " -g " in raw_help
+    has_load_config    = "--load" in raw_help
+    has_help_fff       = "--help-fff" in raw_help
+    supports_bgcode    = "--export-binary-gcode" in raw_help or "--binary" in raw_help
+
+    raw_help_fff: Optional[str] = None
+    if has_help_fff:
+        try:
+            r_fff = subprocess.run(
+                [exe, "--help-fff"],
+                capture_output=True, text=True, timeout=30,
+            )
+            raw_help_fff = r_fff.stdout + r_fff.stderr
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    return PrusaSlicerCapabilities(
+        version_text=version_text,
+        has_export_gcode=has_export_gcode,
+        has_load_config=has_load_config,
+        has_help_fff=has_help_fff,
+        supports_binary_gcode=supports_bgcode,
+        raw_help=raw_help,
+        raw_help_fff=raw_help_fff,
+    )
+
+
+def run_prusaslicer(
+    exe: str,
+    args: List[str],
+    timeout_s: int = 600,
+) -> RunResult:
+    """Execute PrusaSlicer with *args* and return the :class:`RunResult`.
+
+    Parameters
+    ----------
+    exe:       Path to the PrusaSlicer executable.
+    args:      Additional arguments (do **not** include the executable itself).
+    timeout_s: Maximum wall-clock time (seconds) before raising
+               :class:`RuntimeError`.
+
+    Raises
+    ------
+    RuntimeError
+        On timeout or if the executable cannot be launched.
+    """
+    cmd = [exe] + args
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True, text=True, timeout=timeout_s,
+        )
+        return RunResult(cmd=cmd, returncode=r.returncode, stdout=r.stdout, stderr=r.stderr)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"PrusaSlicer timed out after {timeout_s}s.  Command: {cmd!r}"
+        )
+    except OSError as exc:
+        raise RuntimeError(f"Cannot run PrusaSlicer {exe!r}: {exc}") from exc
+
+
+def slice_model(exe: str, req: SliceRequest) -> RunResult:
+    """Slice a 3-D model with PrusaSlicer and write the G-code output.
+
+    Builds the CLI command from *req* and delegates to
+    :func:`run_prusaslicer`.
+
+    Parameters
+    ----------
+    exe: Path to the PrusaSlicer executable.
+    req: :class:`SliceRequest` describing the slicing job.
+
+    Returns
+    -------
+    RunResult
+        Exit code, stdout, and stderr from PrusaSlicer.
+    """
+    args: List[str] = []
+    if req.config_ini:
+        args += ["--load", req.config_ini]
+    args += ["--export-gcode", "--output", req.output_path]
+    args += req.extra_args
+    args.append(req.input_path)
+    return run_prusaslicer(exe, args)
+
+
+def slice_batch(
+    exe: str,
+    inputs: List[str],
+    output_dir: str,
+    config_ini: Optional[str],
+    naming: str = "{stem}.gcode",
+    parallelism: int = 1,
+) -> List[RunResult]:
+    """Slice multiple models, writing output files to *output_dir*.
+
+    Parameters
+    ----------
+    exe:         Path to the PrusaSlicer executable.
+    inputs:      List of input model paths.
+    output_dir:  Directory for output ``.gcode`` files (created if absent).
+    config_ini:  Path to a PrusaSlicer ``.ini`` config (or ``None``).
+    naming:      Output filename template.  ``{stem}`` is replaced with the
+                 input file stem (filename without extension).
+    parallelism: Number of concurrent PrusaSlicer processes (1 = serial).
+
+    Returns
+    -------
+    List[RunResult]
+        One :class:`RunResult` per input, in the same order as *inputs*.
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _do_one(inp: str) -> RunResult:
+        stem = Path(inp).stem
+        out_name = render_template(naming, {"stem": stem})
+        req = SliceRequest(
+            input_path=inp,
+            output_path=str(out_dir / out_name),
+            config_ini=config_ini,
+        )
+        return slice_model(exe, req)
+
+    if parallelism <= 1:
+        return [_do_one(inp) for inp in inputs]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as pool:
+        futures = [pool.submit(_do_one, inp) for inp in inputs]
+        return [f.result() for f in futures]
