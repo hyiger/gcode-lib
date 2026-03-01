@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gcode-lib"
+version = "1.2.0"
+description = "Parse, analyse, and transform G-code files — plain-text .gcode and Prusa .bgcode"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Hyiger" },
+]
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["gcode", "3d-printing", "prusaslicer", "bgcode", "cnc", "fdm", "post-processing"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Manufacturing",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/hyiger/gcode-lib"
+Repository = "https://github.com/hyiger/gcode-lib"
+"Bug Tracker" = "https://github.com/hyiger/gcode-lib/issues"
+
+[tool.hatch.build.targets.wheel]
+# gcode_lib is a single-file module (not a package directory)
+py-modules = ["gcode_lib"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "gcode_lib.py",
+    "tests/",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
