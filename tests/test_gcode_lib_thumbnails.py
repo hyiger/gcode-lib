@@ -160,11 +160,12 @@ class TestRenderTextThumbnails:
         out = gl.to_text(gf)
         assert "thumbnail" not in out
 
-    def test_size_in_header_matches_data_length(self):
+    def test_size_in_header_is_b64_char_count(self):
+        # PrusaSlicer stores the base64 character count, not the raw byte count
         text = _thumb_block("thumbnail", 16, 16, PNG_DATA) + GCODE_BODY
         gf = gl.from_text(text)
         out = gl.to_text(gf)
-        expected_size = str(len(PNG_DATA))
+        expected_size = len(base64.b64encode(PNG_DATA))
         assert f"; thumbnail begin 16x16 {expected_size}" in out
 
 

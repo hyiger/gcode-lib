@@ -610,7 +610,7 @@ def _render_text_thumbnails(thumbnails: List[Thumbnail]) -> str:
         keyword = _THUMB_FMT_KEYWORD.get(thumb.format_code, "thumbnail")
         b64 = base64.b64encode(thumb.data).decode("ascii")
         parts.append(
-            f"; {keyword} begin {thumb.width}x{thumb.height} {len(thumb.data)}"
+            f"; {keyword} begin {thumb.width}x{thumb.height} {len(b64)}"
         )
         for off in range(0, len(b64), _THUMB_B64_LINE_LEN):
             parts.append("; " + b64[off : off + _THUMB_B64_LINE_LEN])
