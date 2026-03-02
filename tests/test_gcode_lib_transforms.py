@@ -487,6 +487,7 @@ class TestRotateXY:
             gl.rotate_xy(
                 lines, 45.0,
                 bed_min_x=0, bed_max_x=100, bed_min_y=0, bed_max_y=100,
+                skip_negative_y=False,
             )
 
     def test_bed_validation_with_margin(self):
@@ -527,3 +528,66 @@ class TestRotateXY:
         result = gl.rotate_xy(lines, 45.0, pivot_x=0.0, pivot_y=0.0)
         assert result[1].raw == "M104 S200"
         assert result[2].raw == "; comment"
+
+    def test_skip_negative_y_default(self):
+        """Moves at negative Y should NOT be transformed by default."""
+        lines = gl.parse_lines("G90\nG1 X50 Y-19\nG1 X50 Y10")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=50.0, pivot_y=0.0)
+        g1s = [ln for ln in result if ln.command == "G1"]
+        # Y=-19 move should be untouched
+        assert g1s[0].words["X"] == pytest.approx(50.0, abs=1e-3)
+        assert g1s[0].words["Y"] == pytest.approx(-19.0, abs=1e-3)
+        # Y=10 move should be rotated: (50, 10) around (50, 0) by 90° → (40, 0)
+        assert g1s[1].words["X"] == pytest.approx(40.0, abs=1e-3)
+        assert g1s[1].words["Y"] == pytest.approx(0.0, abs=1e-3)
+
+    def test_skip_negative_y_false_transforms_all(self):
+        """With skip_negative_y=False, negative-Y moves are also transformed."""
+        lines = gl.parse_lines("G90\nG1 X50 Y-19")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=50.0, pivot_y=0.0, skip_negative_y=False)
+        g1 = [ln for ln in result if ln.command == "G1"][0]
+        # (50, -19) around (50, 0) by 90° → (50+19, 0) = (69, 0)
+        assert g1.words["X"] == pytest.approx(69.0, abs=1e-3)
+        assert g1.words["Y"] == pytest.approx(0.0, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# skip_negative_y across other transforms
+# ---------------------------------------------------------------------------
+
+def test_translate_xy_allow_arcs_skips_negative_y():
+    """translate_xy_allow_arcs should skip negative-Y moves by default."""
+    lines = gl.parse_lines("G90\nG1 X10 Y-5\nG1 X10 Y20")
+    result = gl.translate_xy_allow_arcs(lines, dx=100.0, dy=100.0)
+    g1s = [ln for ln in result if ln.command == "G1"]
+    # Y=-5 move: untouched
+    assert g1s[0].words["X"] == pytest.approx(10.0, abs=1e-3)
+    assert g1s[0].words["Y"] == pytest.approx(-5.0, abs=1e-3)
+    # Y=20 move: shifted
+    assert g1s[1].words["X"] == pytest.approx(110.0, abs=1e-3)
+    assert g1s[1].words["Y"] == pytest.approx(120.0, abs=1e-3)
+
+
+def test_apply_xy_transform_skips_negative_y():
+    """apply_xy_transform should skip negative-Y moves by default."""
+    lines = gl.parse_lines("G90\nG1 X10 Y-3\nG1 X10 Y5")
+    result = gl.apply_xy_transform(lines, lambda x, y: (x + 50, y + 50))
+    g1s = [ln for ln in result if ln.command == "G1"]
+    # Y=-3 move: untouched
+    assert g1s[0].words["X"] == pytest.approx(10.0, abs=1e-3)
+    assert g1s[0].words["Y"] == pytest.approx(-3.0, abs=1e-3)
+    # Y=5 move: transformed
+    assert g1s[1].words["X"] == pytest.approx(60.0, abs=1e-3)
+    assert g1s[1].words["Y"] == pytest.approx(55.0, abs=1e-3)
+
+
+def test_compute_bounds_skip_negative_y():
+    """compute_bounds with skip_negative_y should exclude negative-Y points."""
+    lines = gl.parse_lines("G90\nG1 X10 Y-19\nG1 X20 Y5\nG1 X30 Y15")
+    b_all = gl.compute_bounds(lines)
+    b_skip = gl.compute_bounds(lines, skip_negative_y=True)
+    assert b_all.y_min == pytest.approx(-19.0, abs=1e-3)
+    assert b_skip.y_min == pytest.approx(5.0, abs=1e-3)
+    # X and max Y should be the same
+    assert b_skip.x_max == pytest.approx(30.0, abs=1e-3)
+    assert b_skip.y_max == pytest.approx(15.0, abs=1e-3)
