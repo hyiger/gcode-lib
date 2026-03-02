@@ -50,7 +50,7 @@ tests/
 - `load(path)` — auto-detects text vs binary
 - `save(gf, path)` — atomic write, preserves format
 - `from_text(text)` / `to_text(gf)` — string round-trip
-- `read_bgcode(data)` — load `GCodeFile` from raw `.bgcode` bytes
+- `read_bgcode(data)` — load `GCodeFile` from raw `.bgcode` bytes (supports DEFLATE, Heatshrink, and MeatPack)
 - `write_bgcode(ascii_gcode, thumbnails)` → `bytes` — serialise to `.bgcode`
 
 ### Parsing utilities

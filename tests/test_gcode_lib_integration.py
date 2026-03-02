@@ -160,25 +160,74 @@ class TestRealGcode:
 
 
 # ---------------------------------------------------------------------------
-# Binary .bgcode — current limitation: Heatshrink GCode blocks
+# Binary .bgcode — Heatshrink + MeatPack support
 # ---------------------------------------------------------------------------
 
 class TestRealBgcode:
     @needs_bgcode
     def test_recognised_as_bgcode(self):
-        # File should be detected as bgcode, not rejected as unknown binary
         assert gl._is_bgcode_file(BGCODE_PATH)
 
     @needs_bgcode
-    def test_load_raises_for_heatshrink(self):
-        """Real PrusaSlicer .bgcode uses Heatshrink (type 3) GCode compression.
+    def test_load_heatshrink_bgcode(self):
+        """Real PrusaSlicer .bgcode with Heatshrink+MeatPack loads successfully."""
+        gf = gl.load(BGCODE_PATH)
+        assert gf.source_format == "bgcode"
+        assert len(gf.lines) > 1000
 
-        This is a known limitation: the library only supports DEFLATE and
-        uncompressed GCode blocks.  The error message should clearly identify
-        the problem.
-        """
-        with pytest.raises(ValueError, match="Heatshrink"):
-            gl.load(BGCODE_PATH)
+    @needs_bgcode
+    def test_heatshrink_bgcode_has_moves(self):
+        gf = gl.load(BGCODE_PATH)
+        stats = gl.compute_stats(gf.lines)
+        assert stats.move_count > 100
+        assert stats.layer_count > 5
+
+    @needs_bgcode
+    def test_heatshrink_bgcode_thumbnails(self):
+        gf = gl.load(BGCODE_PATH)
+        assert len(gf.thumbnails) >= 1
+
+
+CALIFLOWER_BGCODE_PATH = os.path.join(
+    os.path.expanduser("~"),
+    "Califlower-100mm_0.4n_0.2mm_PETG_COREONE_51m.bgcode",
+)
+needs_califlower = pytest.mark.skipif(
+    not os.path.exists(CALIFLOWER_BGCODE_PATH),
+    reason="Califlower .bgcode test file not present",
+)
+
+
+class TestCaliflowerBgcode:
+    @needs_califlower
+    def test_load_succeeds(self):
+        gf = gl.load(CALIFLOWER_BGCODE_PATH)
+        assert gf.source_format == "bgcode"
+        assert len(gf.lines) > 10_000
+
+    @needs_califlower
+    def test_stats_reasonable(self):
+        gf = gl.load(CALIFLOWER_BGCODE_PATH)
+        stats = gl.compute_stats(gf.lines)
+        assert stats.move_count > 10_000
+        assert stats.layer_count > 100
+
+    @needs_califlower
+    def test_thumbnails_present(self):
+        gf = gl.load(CALIFLOWER_BGCODE_PATH)
+        assert len(gf.thumbnails) >= 1
+
+    @needs_califlower
+    def test_detect_printer_preset(self):
+        gf = gl.load(CALIFLOWER_BGCODE_PATH)
+        assert gl.detect_printer_preset(gf.lines) == "COREONE"
+
+    @needs_califlower
+    def test_gcode_contains_expected_commands(self):
+        gf = gl.load(CALIFLOWER_BGCODE_PATH)
+        commands = {l.command for l in gf.lines if l.command}
+        assert "G1" in commands
+        assert "G0" in commands
 
 
 # ---------------------------------------------------------------------------
