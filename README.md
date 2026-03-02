@@ -707,7 +707,7 @@ Built-in presets provide common bed dimensions and printing parameters for Prusa
 
 ```python
 print(list(gl.PRINTER_PRESETS.keys()))
-# ['COREONE', 'MK4', 'MK3S', 'MINI', 'XL']
+# ['COREONE', 'COREONEL', 'MK4', 'MK3S', 'MINI', 'XL']
 
 p = gl.PRINTER_PRESETS["MK4"]
 print(p["bed_x"], p["bed_y"], p["max_z"])   # 250.0  220.0  220.0
@@ -716,6 +716,7 @@ print(p["bed_x"], p["bed_y"], p["max_z"])   # 250.0  220.0  220.0
 | Key | `bed_x` mm | `bed_y` mm | `max_z` mm |
 |---|---|---|---|
 | `COREONE` | 250.0 | 220.0 | 250.0 |
+| `COREONEL` | 300.0 | 300.0 | 330.0 |
 | `MK4` | 250.0 | 220.0 | 220.0 |
 | `MK3S` | 250.0 | 210.0 | 210.0 |
 | `MINI` | 180.0 | 180.0 | 180.0 |
@@ -752,6 +753,26 @@ lines = gl.recenter_to_bed(
     margin=5.0,
     mode="center",
 )
+```
+
+### Auto-detecting printer preset from G-code
+
+PrusaSlicer embeds an `M862.3 P "PRINTERNAME"` command in the G-code to identify the target
+printer.  `detect_printer_preset` scans for this command and returns the matching preset key,
+or `None` if no match is found.
+
+```python
+gf = gl.load("print.gcode")
+preset = gl.detect_printer_preset(gf.lines)
+print(preset)   # e.g. "COREONE", "MK4", or None
+```
+
+`detect_print_volume` does the same lookup and returns the matching bed dimensions as a dict:
+
+```python
+vol = gl.detect_print_volume(gf.lines)
+if vol:
+    print(vol)   # {"bed_x": 250.0, "bed_y": 220.0, "max_z": 250.0}
 ```
 
 ---
@@ -919,8 +940,8 @@ bgcode_bytes = gl.write_bgcode(gcode_text)
 ```
 
 > **Note:** `write_bgcode` produces a valid BGCode v2 file with DEFLATE-compressed G-code.
-> The same Heatshrink limitation described in [Slicer and vendor compatibility](#slicer-and-vendor-compatibility)
-> applies to reading: only DEFLATE-compressed and uncompressed G-code blocks can be decoded.
+> Reading supports all BGCode compression types (None, DEFLATE, Heatshrink) and all encoding
+> types (raw UTF-8, MeatPack, MeatPack with comments).
 
 ---
 
@@ -1070,16 +1091,13 @@ in `gf.lines` and `gf.thumbnails` will be empty.
 The Prusa binary G-code format (`.bgcode`) is a **Prusa-specific** format.  No other slicer
 produces `.bgcode` files.
 
-Two limitations apply when loading `.bgcode`:
+All BGCode compression types are fully supported:
 
-- **Heatshrink-compressed GCode blocks are not supported.**  Current releases of PrusaSlicer
-  compress the embedded G-code using Heatshrink (compression type 3).  Attempting to load such
-  a file raises `ValueError: Heatshrink decompression is not supported`.
-  *Workaround:* export as plain `.gcode` from PrusaSlicer's export dialog.
-- **DEFLATE-compressed and uncompressed GCode blocks** are fully supported.
+- **Uncompressed** (type 0) and **DEFLATE** (type 1) G-code blocks
+- **Heatshrink** (types 2 and 3) — pure-Python LZSS decompression, no third-party deps
+- **MeatPack** encoding (types 1 and 2) — nibble-based G-code encoding used by PrusaSlicer
 
-Thumbnail and metadata blocks in `.bgcode` are unaffected by this limitation and are always
-read correctly regardless of GCode block compression type.
+Thumbnail and metadata blocks are always read correctly regardless of compression type.
 
 ---
 
@@ -1099,7 +1117,7 @@ read correctly regardless of GCode block compression type.
 
 | Name | Type | Description |
 |---|---|---|
-| `PRINTER_PRESETS` | `Dict[str, Dict]` | Bed and Z dimensions for Prusa printers (`COREONE`, `MK4`, `MK3S`, `MINI`, `XL`) |
+| `PRINTER_PRESETS` | `Dict[str, Dict]` | Bed and Z dimensions for Prusa printers (`COREONE`, `COREONEL`, `MK4`, `MK3S`, `MINI`, `XL`) |
 | `FILAMENT_PRESETS` | `Dict[str, Dict]` | Hotend/bed temperatures and retraction for common materials (`PLA`, `PETG`, `ASA`, `TPU`, `ABS`) |
 
 ### Data classes
@@ -1318,6 +1336,16 @@ analyze_xy_transform(lines, transform_fn,
 
 Return keys: `max_dx`, `max_dy`, `max_displacement`, `line_number`, `move_count`.
 
+#### Preset detection
+
+```
+detect_printer_preset(lines: List[GCodeLine]) -> Optional[str]
+detect_print_volume(lines: List[GCodeLine]) -> Optional[Dict[str, float]]
+```
+
+`detect_printer_preset` scans for `M862.3 P "..."` and returns the matching `PRINTER_PRESETS` key (e.g. `"COREONE"`) or `None`.
+`detect_print_volume` returns the matching preset's bed dimensions (`bed_x`, `bed_y`, `max_z`) as a dict, or `None`.
+
 #### Template and thumbnail
 
 ```
@@ -1371,7 +1399,6 @@ replace_or_append(code: str, axis: str, val: float,
 - **No G-code validation.**  The library parses and transforms; it does not validate that the
   resulting G-code is printable or within machine limits.  Use `find_oob_moves` for basic bed
   boundary checking.
-- **Heatshrink BGCode decompression not supported.**  See [Slicer and vendor compatibility](#slicer-and-vendor-compatibility).
 
 ---
 
@@ -1382,5 +1409,6 @@ python -m pytest tests/ -v
 ```
 
 Tests cover I/O, parsing, state tracking, statistics, all transform functions, bed placement,
-layer iteration, presets, template rendering, thumbnail encoding, BGCode round-trips, and
-PrusaSlicer CLI helpers — using only stdlib and pytest.
+layer iteration, presets, preset detection, template rendering, thumbnail encoding, BGCode
+round-trips (including Heatshrink decompression and MeatPack decoding), and PrusaSlicer CLI
+helpers — using only stdlib and pytest.
