@@ -101,6 +101,7 @@ tests/
 - `PRINTER_PRESETS` — dict of `{name: {bed_x, bed_y, max_z}}` (COREONE, COREONEL, MK4, MK3S, MINI, XL)
 - `FILAMENT_PRESETS` — dict of `{name: {hotend, bed, fan, retract}}` (PLA, PETG, ASA, TPU, ABS)
 - `detect_printer_preset(lines)` → `Optional[str]` — detect preset name from `M862.3 P` command in G-code
+- `detect_print_volume(lines)` → `Optional[Dict[str, float]]` — detect print volume (`bed_x`, `bed_y`, `max_z`) from G-code
 
 ### PrusaSlicer CLI helpers
 - `find_prusaslicer_executable(prefer_console, explicit_path)` → `str`

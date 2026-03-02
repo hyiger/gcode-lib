@@ -2121,6 +2121,19 @@ def detect_printer_preset(lines: List[GCodeLine]) -> Optional[str]:
     return None
 
 
+def detect_print_volume(lines: List[GCodeLine]) -> Optional[Dict[str, float]]:
+    """Detect the print volume from an ``M862.3 P`` line in *lines*.
+
+    Returns the matching :data:`PRINTER_PRESETS` entry (a dict with keys
+    ``bed_x``, ``bed_y``, ``max_z``) or ``None`` if no recognised printer
+    model is found.
+    """
+    name = detect_printer_preset(lines)
+    if name is not None:
+        return dict(PRINTER_PRESETS[name])
+    return None
+
+
 # ---------------------------------------------------------------------------
 # §6 — Template rendering
 # ---------------------------------------------------------------------------

@@ -498,6 +498,33 @@ class TestDetectPrinterPreset:
         assert gl.detect_printer_preset(lines) == "COREONE"
 
 
+class TestDetectPrintVolume:
+    def test_returns_volume_for_coreone(self):
+        lines = gl.parse_lines('M862.3 P "COREONE"\n')
+        vol = gl.detect_print_volume(lines)
+        assert vol == {"bed_x": 250.0, "bed_y": 220.0, "max_z": 250.0}
+
+    def test_returns_volume_for_coreonel(self):
+        lines = gl.parse_lines('M862.3 P "COREONEL"\n')
+        vol = gl.detect_print_volume(lines)
+        assert vol == {"bed_x": 300.0, "bed_y": 300.0, "max_z": 330.0}
+
+    def test_returns_none_when_no_printer(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y10\n")
+        assert gl.detect_print_volume(lines) is None
+
+    def test_returns_none_for_unknown_printer(self):
+        lines = gl.parse_lines('M862.3 P "MYSTERY"\n')
+        assert gl.detect_print_volume(lines) is None
+
+    def test_returned_dict_is_a_copy(self):
+        """Mutating the result must not change PRINTER_PRESETS."""
+        lines = gl.parse_lines('M862.3 P "MK4"\n')
+        vol = gl.detect_print_volume(lines)
+        vol["bed_x"] = 9999.0
+        assert gl.PRINTER_PRESETS["MK4"]["bed_x"] == 250.0
+
+
 # ===========================================================================
 # §6 — render_template
 # ===========================================================================
