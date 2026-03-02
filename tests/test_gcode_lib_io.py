@@ -278,3 +278,207 @@ def test_is_bgcode_file_false(tmp_path):
 
 def test_is_bgcode_file_missing(tmp_path):
     assert gl._is_bgcode_file(str(tmp_path / "nonexistent.bgcode")) is False
+
+
+# ---------------------------------------------------------------------------
+# Heatshrink decompression unit tests
+# ---------------------------------------------------------------------------
+
+def _hs_bitstream(*bit_strings: str) -> bytes:
+    """Build a bytearray from '0'/'1' bit strings (MSB-first, zero-padded)."""
+    bits = "".join(bit_strings)
+    # Pad to multiple of 8.
+    while len(bits) % 8:
+        bits += "0"
+    out = bytearray()
+    for i in range(0, len(bits), 8):
+        out.append(int(bits[i:i + 8], 2))
+    return bytes(out)
+
+
+class TestHeatshrinkDecompress:
+    def test_empty_expected_size(self):
+        assert gl._heatshrink_decompress(b"\x00", 11, 4, 0) == b""
+
+    def test_single_literal(self):
+        # Tag=1, then 8 bits for 'A' (0x41 = 01000001)
+        data = _hs_bitstream("1", "01000001")
+        result = gl._heatshrink_decompress(data, 8, 4, 1)
+        assert result == b"A"
+
+    def test_two_literals(self):
+        # Tag=1, 'A', Tag=1, 'B'
+        data = _hs_bitstream("1", "01000001", "1", "01000010")
+        result = gl._heatshrink_decompress(data, 8, 4, 2)
+        assert result == b"AB"
+
+    def test_literal_then_backref(self):
+        # window_sz2=8 (window=256), lookahead_sz2=4
+        # Literal 'A', then backref index=0 (neg_offset=1), count=0 (copy 1 byte)
+        # → should output 'AA'
+        data = _hs_bitstream(
+            "1", "01000001",            # literal 'A'
+            "0", "00000000", "0000",    # backref: index=0 (8 bits), count=0 (4 bits)
+        )
+        result = gl._heatshrink_decompress(data, 8, 4, 2)
+        assert result == b"AA"
+
+    def test_backref_copies_multiple(self):
+        # Literal 'X', then backref index=0, count=3 → copy 4 bytes → 'XXXXX'
+        data = _hs_bitstream(
+            "1", "01011000",            # literal 'X' (0x58)
+            "0", "00000000", "0011",    # backref: index=0, count=3 → 4 copies
+        )
+        result = gl._heatshrink_decompress(data, 8, 4, 5)
+        assert result == b"XXXXX"
+
+    def test_window_12_lookahead_4(self):
+        # window_sz2=12 (4096), lookahead_sz2=4
+        # Literal 'Z' (0x5A), then backref index=0 (12 bits), count=1 (4 bits) → 'ZZZ'
+        data = _hs_bitstream(
+            "1", "01011010",            # literal 'Z'
+            "0", "000000000000", "0001",  # backref: 12-bit index=0, count=1 → 2 copies
+        )
+        result = gl._heatshrink_decompress(data, 12, 4, 3)
+        assert result == b"ZZZ"
+
+    def test_multiple_literals_and_backref(self):
+        # 'A' 'B' then backref to copy both → 'ABAB'
+        # window_sz2=8, lookahead_sz2=4
+        data = _hs_bitstream(
+            "1", "01000001",            # literal 'A'
+            "1", "01000010",            # literal 'B'
+            "0", "00000001", "0001",    # backref: index=1 (offset=2), count=1 (copy 2)
+        )
+        result = gl._heatshrink_decompress(data, 8, 4, 4)
+        assert result == b"ABAB"
+
+
+# ---------------------------------------------------------------------------
+# MeatPack decoding unit tests
+# ---------------------------------------------------------------------------
+
+class TestMeatpackDecode:
+    # Signal prefix to enable packing.
+    ENABLE = bytes([0xFF, 0xFF, 251])
+    # Signal prefix to enable no-spaces mode.
+    ENABLE_NOSPACE = bytes([0xFF, 0xFF, 247])
+    # Signal prefix to disable packing.
+    DISABLE = bytes([0xFF, 0xFF, 250])
+
+    def test_raw_passthrough_before_enable(self):
+        """Before EnablePacking signal, bytes pass through as raw."""
+        data = b"G1 X10\n"
+        assert gl._meatpack_decode(data) == "G1 X10\n"
+
+    def test_packed_digits(self):
+        """Two packed digits decode correctly."""
+        # '1' = nibble 1, '2' = nibble 2 → byte = (2 << 4) | 1 = 0x21
+        data = self.ENABLE + bytes([0x21])
+        assert gl._meatpack_decode(data) == "12"
+
+    def test_packed_g_and_digit(self):
+        """'G' = nibble 13, '1' = nibble 1 → byte = (1 << 4) | 13 = 0x1D."""
+        data = self.ENABLE + bytes([0x1D])
+        result = gl._meatpack_decode(data)
+        assert result == "G1"
+
+    def test_escape_first_nibble(self):
+        """First nibble (lo) is escape → next raw byte is first char."""
+        # 'M' not in table → lo=0xF, hi=7 → byte = (7 << 4) | 0xF = 0x7F
+        # Then raw byte 0x4D = 'M'
+        data = self.ENABLE + bytes([0x7F, 0x4D])
+        result = gl._meatpack_decode(data)
+        assert result == "M7"  # raw 'M' first, then packed '7'
+
+    def test_escape_second_nibble(self):
+        """Second nibble (hi) is escape → next raw byte is second char.
+
+        The space normalization inserts whitespace between a digit and an
+        uppercase letter (``3P`` → ``3 P``)."""
+        # '3' in table = nibble 3, escape = 0xF
+        # lo=3, hi=0xF → byte = (0xF << 4) | 3 = 0xF3
+        # Then raw byte 0x50 = 'P'
+        data = self.ENABLE + bytes([0xF3, 0x50])
+        result = gl._meatpack_decode(data)
+        assert result == "3 P"  # packed '3' first, then raw 'P' (space inserted)
+
+    def test_both_escape(self):
+        """Both nibbles are escapes → next 2 bytes are raw."""
+        # byte = 0xFF (lo=0xF, hi=0xF)
+        # But 0xFF triggers signal detection — we need it not to be followed by 0xFF.
+        # Actually, 0xFF as packed data: lo=0xF, hi=0xF → both escapes
+        # If next byte is NOT 0xFF, the 0xFF is processed as packed data.
+        data = self.ENABLE + bytes([0xFF, 0x41, 0x42])
+        # 0xFF: single 0xFF (next byte 0x41 != 0xFF) → packed byte
+        # lo=0xF, hi=0xF → pending_raw=2
+        # 0x41 = 'A' → first raw char
+        # 0x42 = 'B' → second raw char
+        result = gl._meatpack_decode(data)
+        assert result == "AB"
+
+    def test_nospace_mode_e_in_table(self):
+        """In no-spaces mode, nibble 11 decodes as 'E' instead of space."""
+        # Enable + NoSpace, then pack 'E' and '1':
+        # 'E' = nibble 11, '1' = nibble 1 → byte = (1 << 4) | 11 = 0x1B
+        data = self.ENABLE + self.ENABLE_NOSPACE + bytes([0x1B])
+        result = gl._meatpack_decode(data)
+        assert result == "E1"
+
+    def test_disable_packing_switches_to_raw(self):
+        data = self.ENABLE + bytes([0x21]) + self.DISABLE + b"raw"
+        result = gl._meatpack_decode(data)
+        assert result == "12raw"
+
+    def test_space_normalization(self):
+        """Space is re-inserted between digit and uppercase letter."""
+        # Encode "G1X10\n" in packed format
+        # G=13,1=1 → (1<<4)|13 = 0x1D
+        # X=14,1=1 → (1<<4)|14 = 0x1E
+        # 0=0, newline=12 → (12<<4)|0 = 0xC0
+        data = self.ENABLE + bytes([0x1D, 0x1E, 0xC0])
+        result = gl._meatpack_decode(data)
+        assert result == "G1 X10\n"
+
+    def test_empty_data(self):
+        assert gl._meatpack_decode(b"") == ""
+
+    def test_m73_decoding(self):
+        """Decode packed 'M73 P0 R15\\n' — realistic G-code command."""
+        # 'M'→esc, '7'=7: lo=0xF, hi=7 → 0x7F, raw 0x4D
+        # '3'=3, ' '=11: lo=3, hi=11 → 0xB3
+        # 'P'→esc, '0'=0: lo=0xF, hi=0 → 0x0F, raw 0x50
+        # ' '=11, 'R'→esc: lo=11, hi=0xF → 0xFB, raw 0x52
+        # '1'=1, '5'=5: lo=1, hi=5 → 0x51
+        # '\n'=12, pad 0: lo=12, hi=0 → 0x0C
+        data = (
+            self.ENABLE
+            + bytes([0x7F, 0x4D, 0xB3, 0x0F, 0x50, 0xFB, 0x52, 0x51, 0x0C])
+        )
+        result = gl._meatpack_decode(data)
+        assert result == "M73 P0 R15\n0"  # trailing '0' from pad nibble
+
+
+# ---------------------------------------------------------------------------
+# bgcode with heatshrink-compressed block
+# ---------------------------------------------------------------------------
+
+def _make_hs_bgcode(gcode_text: str) -> bytes:
+    """Build a .bgcode with Heatshrink_12_4 compressed + MeatPack encoded GCode."""
+    # For testing, we just use uncompressed raw encoding to keep it simple.
+    # The real heatshrink test is via the integration test with the real file.
+    # This helper just tests that the _bgcode_split path dispatches correctly.
+    MAGIC        = b"GCDE"
+    BLK_GCODE    = 1
+    COMP_NONE    = 0
+    ENC_RAW      = 0
+
+    file_hdr = MAGIC + struct.pack("<IH", 1, 1)
+    payload  = gcode_text.encode("utf-8")
+    hdr      = struct.pack("<HHI", BLK_GCODE, COMP_NONE, len(payload))
+    params   = struct.pack("<H", ENC_RAW)
+    cksum    = zlib.crc32(hdr) & 0xFFFFFFFF
+    cksum    = zlib.crc32(params, cksum) & 0xFFFFFFFF
+    cksum    = zlib.crc32(payload, cksum) & 0xFFFFFFFF
+    gcode_block = hdr + params + payload + struct.pack("<I", cksum)
+    return file_hdr + gcode_block
