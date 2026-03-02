@@ -317,6 +317,11 @@ print(f"Arcs before: {before}, after: {after}")   # after should be 0
 
 All transform functions return a **new list** and do not mutate their input.
 
+By default, all transform functions skip moves whose effective absolute Y position is
+negative (`skip_negative_y=True`).  This prevents PrusaSlicer purge lines and nozzle wipes
+(which dip below Y=0) from being modified.  Pass `skip_negative_y=False` to transform
+all moves regardless of Y position.
+
 ### Translate (shift) — requires linearized arcs
 
 ```python

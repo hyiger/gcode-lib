@@ -1325,6 +1325,7 @@ def apply_xy_transform(
     xy_decimals: int = DEFAULT_XY_DECIMALS,
     other_decimals: int = DEFAULT_OTHER_DECIMALS,
     initial_state: Optional[ModalState] = None,
+    skip_negative_y: bool = True,
 ) -> List[GCodeLine]:
     """Apply an arbitrary XY transform to all G0/G1 move endpoints.
 
@@ -1340,6 +1341,11 @@ def apply_xy_transform(
 
     Raises :class:`ValueError` when a move with X/Y words is encountered
     in relative XY mode (G91), as the transform requires absolute coords.
+
+    When *skip_negative_y* is ``True`` (the default), moves whose effective
+    absolute Y position is negative are passed through untransformed.  This
+    prevents PrusaSlicer purge-line and wipe moves (which dip below Y=0)
+    from being modified.
     """
     result: List[GCodeLine] = []
     state = initial_state.copy() if initial_state else ModalState()
@@ -1353,6 +1359,11 @@ def apply_xy_transform(
                 )
             x_t = line.words.get("X", state.x)
             y_t = line.words.get("Y", state.y)
+
+            if skip_negative_y and y_t < 0:
+                result.append(line)
+                advance_state(state, line)
+                continue
             xs, ys = fn(x_t, y_t)
 
             code, comment = split_comment(line.raw)
@@ -1401,6 +1412,7 @@ def apply_skew(
     xy_decimals: int = DEFAULT_XY_DECIMALS,
     other_decimals: int = DEFAULT_OTHER_DECIMALS,
     initial_state: Optional[ModalState] = None,
+    skip_negative_y: bool = True,
 ) -> List[GCodeLine]:
     """Apply XY skew correction to all G0/G1 move endpoints.
 
@@ -1425,6 +1437,7 @@ def apply_skew(
         xy_decimals=xy_decimals,
         other_decimals=other_decimals,
         initial_state=initial_state,
+        skip_negative_y=skip_negative_y,
     )
 
 
@@ -1436,6 +1449,7 @@ def translate_xy(
     xy_decimals: int = DEFAULT_XY_DECIMALS,
     other_decimals: int = DEFAULT_OTHER_DECIMALS,
     initial_state: Optional[ModalState] = None,
+    skip_negative_y: bool = True,
 ) -> List[GCodeLine]:
     """Translate all G0/G1 XY move endpoints by ``(dx, dy)``."""
     return apply_xy_transform(
@@ -1444,6 +1458,7 @@ def translate_xy(
         xy_decimals=xy_decimals,
         other_decimals=other_decimals,
         initial_state=initial_state,
+        skip_negative_y=skip_negative_y,
     )
 
 
@@ -1456,6 +1471,7 @@ def compute_bounds(
     *,
     extruding_only: bool = False,
     include_arcs: bool = True,
+    skip_negative_y: bool = False,
     arc_seg_mm: float = DEFAULT_ARC_SEG_MM,
     arc_max_deg: float = DEFAULT_ARC_MAX_DEG,
     initial_state: Optional[ModalState] = None,
@@ -1466,6 +1482,7 @@ def compute_bounds(
     ----------
     extruding_only: Include only endpoints/points from extruding moves.
     include_arcs:   Linearize G2/G3 arcs and include their sample points.
+    skip_negative_y: Exclude moves whose effective Y position is negative.
     """
     bounds = Bounds()
     state  = initial_state.copy() if initial_state else ModalState()
@@ -1486,7 +1503,8 @@ def compute_bounds(
                 if "E" in line.words:
                     e_w    = line.words["E"]
                     is_ext = (e_w > state.e) if state.abs_e else (e_w > 0.0)
-                if not extruding_only or is_ext:
+                skip_y = skip_negative_y and y1 < 0
+                if (not extruding_only or is_ext) and not skip_y:
                     bounds.expand(x1, y1)
 
             if "Z" in line.words:
@@ -1504,7 +1522,8 @@ def compute_bounds(
                 is_ext = (e_w > state.e) if state.abs_e else (e_w > 0.0)
             if not extruding_only or is_ext:
                 for xi, yi in pts:
-                    bounds.expand(xi, yi)
+                    if not (skip_negative_y and yi < 0):
+                        bounds.expand(xi, yi)
             advance_state(state, line)
 
         else:
@@ -1758,6 +1777,7 @@ def translate_xy_allow_arcs(
     xy_decimals: int = DEFAULT_XY_DECIMALS,
     other_decimals: int = DEFAULT_OTHER_DECIMALS,
     initial_state: Optional[ModalState] = None,
+    skip_negative_y: bool = True,
 ) -> List[GCodeLine]:
     """Translate XY by ``(dx, dy)``, handling G2/G3 arcs natively.
 
@@ -1776,6 +1796,9 @@ def translate_xy_allow_arcs(
     in G91 (relative XY) mode.  Call :func:`to_absolute_xy` first if the
     file uses G91 sections.
 
+    When *skip_negative_y* is ``True`` (the default), moves whose effective
+    absolute Y position is negative are passed through untransformed.
+
     Parameters
     ----------
     lines:         Input G-code line list.
@@ -1783,6 +1806,7 @@ def translate_xy_allow_arcs(
     xy_decimals:   Decimal places for X/Y output.
     other_decimals: Decimal places for other axes.
     initial_state: Optional starting :class:`ModalState`.
+    skip_negative_y: Skip moves at Y < 0 (default ``True``).
     """
     result: List[GCodeLine] = []
     state = initial_state.copy() if initial_state else ModalState()
@@ -1797,6 +1821,12 @@ def translate_xy_allow_arcs(
                     "translate_xy_allow_arcs: relative XY (G91) is not supported. "
                     "Call to_absolute_xy() first."
                 )
+
+            y_eff = words.get("Y", state.y)
+            if skip_negative_y and y_eff < 0:
+                result.append(line)
+                advance_state(state, line)
+                continue
 
             code, comment = split_comment(line.raw)
             new_code = code
@@ -1858,12 +1888,18 @@ def rotate_xy(
     xy_decimals: int = DEFAULT_XY_DECIMALS,
     other_decimals: int = DEFAULT_OTHER_DECIMALS,
     initial_state: Optional[ModalState] = None,
+    skip_negative_y: bool = True,
 ) -> List[GCodeLine]:
     """Rotate XY coordinates by *angle_deg* degrees (counter-clockwise positive).
 
     Handles G0/G1 moves **and** G2/G3 arcs natively — no prior
     linearization required.  The I/J arc-centre offsets are rotated by the
     same angle so arcs remain geometrically correct.
+
+    When *skip_negative_y* is ``True`` (the default), moves whose effective
+    absolute Y position is negative are passed through untransformed.  The
+    default pivot and bed validation also use extruding-only bounds so that
+    purge-line moves do not affect rotation centre or boundary checks.
 
     Parameters
     ----------
@@ -1881,6 +1917,7 @@ def rotate_xy(
     xy_decimals:   Decimal places for X/Y output.
     other_decimals: Decimal places for other axes.
     initial_state: Optional starting :class:`ModalState`.
+    skip_negative_y: Skip moves at Y < 0 (default ``True``).
 
     Raises
     ------
@@ -1894,7 +1931,10 @@ def rotate_xy(
 
     # --- Determine pivot ------------------------------------------------
     if pivot_x is None or pivot_y is None:
-        bounds = compute_bounds(lines, initial_state=initial_state)
+        bounds = compute_bounds(
+            lines, skip_negative_y=skip_negative_y,
+            initial_state=initial_state,
+        )
         if not bounds.valid:
             return list(lines)          # nothing to rotate
         if pivot_x is None:
@@ -1932,6 +1972,12 @@ def rotate_xy(
             # Resolve full absolute position then rotate
             x_abs = words.get("X", state.x)
             y_abs = words.get("Y", state.y)
+
+            if skip_negative_y and y_abs < 0:
+                result.append(line)
+                advance_state(state, line)
+                continue
+
             xr, yr = _rot(x_abs, y_abs)
 
             code, comment = split_comment(line.raw)
@@ -1975,7 +2021,7 @@ def rotate_xy(
     has_bed = (bed_min_x is not None and bed_max_x is not None
                and bed_min_y is not None and bed_max_y is not None)
     if has_bed:
-        rb = compute_bounds(result)
+        rb = compute_bounds(result, skip_negative_y=skip_negative_y)
         if rb.valid:
             avail_x = (bed_max_x - bed_min_x) - 2 * margin
             avail_y = (bed_max_y - bed_min_y) - 2 * margin
@@ -1993,6 +2039,7 @@ def rotate_xy(
                     result, dx, dy,
                     xy_decimals=xy_decimals,
                     other_decimals=other_decimals,
+                    skip_negative_y=skip_negative_y,
                 )
 
     return result
@@ -2129,6 +2176,7 @@ def recenter_to_bed(
     xy_decimals: int = DEFAULT_XY_DECIMALS,
     other_decimals: int = DEFAULT_OTHER_DECIMALS,
     initial_state: Optional[ModalState] = None,
+    skip_negative_y: bool = True,
 ) -> List[GCodeLine]:
     """Centre or scale a print to fit within the specified bed extents.
 
@@ -2145,6 +2193,7 @@ def recenter_to_bed(
                bed space (arcs must be linearized beforehand).
     xy_decimals, other_decimals: Output decimal precision.
     initial_state: Optional starting :class:`ModalState`.
+    skip_negative_y: Skip moves at Y < 0 (default ``True``).
 
     Raises
     ------
@@ -2156,7 +2205,9 @@ def recenter_to_bed(
     if mode not in ("center", "fit"):
         raise ValueError(f"recenter_to_bed: mode must be 'center' or 'fit', got {mode!r}")
 
-    bounds = compute_bounds(lines, initial_state=initial_state)
+    bounds = compute_bounds(
+        lines, skip_negative_y=skip_negative_y, initial_state=initial_state,
+    )
     if not bounds.valid:
         return list(lines)
 
@@ -2171,6 +2222,7 @@ def recenter_to_bed(
             xy_decimals=xy_decimals,
             other_decimals=other_decimals,
             initial_state=initial_state,
+            skip_negative_y=skip_negative_y,
         )
 
     # "fit" mode — uniform scale + translate.
@@ -2196,6 +2248,7 @@ def recenter_to_bed(
         xy_decimals=xy_decimals,
         other_decimals=other_decimals,
         initial_state=initial_state,
+        skip_negative_y=skip_negative_y,
     )
 
 
@@ -2320,6 +2373,7 @@ def apply_xy_transform_by_layer(
     xy_decimals: int = DEFAULT_XY_DECIMALS,
     other_decimals: int = DEFAULT_OTHER_DECIMALS,
     initial_state: Optional[ModalState] = None,
+    skip_negative_y: bool = True,
 ) -> List[GCodeLine]:
     """Apply *transform_fn* only to layers within ``[z_min, z_max]``.
 
@@ -2335,6 +2389,7 @@ def apply_xy_transform_by_layer(
     lines:        G-code line list.
     transform_fn: ``(x, y) -> (x', y')`` callable.
     z_min, z_max: Optional Z range filter (inclusive).
+    skip_negative_y: Skip moves at Y < 0 (default ``True``).
     """
     result: List[GCodeLine] = []
     state = initial_state.copy() if initial_state else ModalState()
@@ -2355,6 +2410,13 @@ def apply_xy_transform_by_layer(
                 )
             x_orig = line.words.get("X", state.x)
             y_orig = line.words.get("Y", state.y)
+
+            if skip_negative_y and y_orig < 0:
+                result.append(line)
+                advance_state(state, line)
+                if "Z" in line.words:
+                    current_z = line.words["Z"] if state.abs_xy else current_z + line.words["Z"]
+                continue
             x_new, y_new = transform_fn(x_orig, y_orig)
 
             code, comment = split_comment(line.raw)

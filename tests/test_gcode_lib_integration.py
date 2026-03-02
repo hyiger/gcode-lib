@@ -288,7 +288,7 @@ class TestRealGcodeTransforms:
         gf  = gl.load(GCODE_PATH)
         dx, dy = 5.0, 3.0
         before = gl.compute_bounds(gf.lines)
-        lines  = gl.translate_xy_allow_arcs(gf.lines, dx=dx, dy=dy)
+        lines  = gl.translate_xy_allow_arcs(gf.lines, dx=dx, dy=dy, skip_negative_y=False)
         after  = gl.compute_bounds(lines)
 
         assert after.x_min == pytest.approx(before.x_min + dx, abs=0.01)
@@ -359,6 +359,7 @@ class TestRealGcodeTransforms:
             bed_min_y=0.0, bed_max_y=p["bed_y"],
             margin=5.0,
             mode="center",
+            skip_negative_y=False,
         )
         bounds = gl.compute_bounds(lines)
         usable_cx = (5.0 + (p["bed_x"] - 5.0)) / 2   # 125.0
@@ -375,7 +376,8 @@ class TestRealGcodeTransforms:
         oob_before = gl.max_oob_distance(gf.lines, COREONE_BED)
 
         lines     = gl.recenter_to_bed(
-            gf.lines, 0, p["bed_x"], 0, p["bed_y"], margin=5.0, mode="center"
+            gf.lines, 0, p["bed_x"], 0, p["bed_y"], margin=5.0, mode="center",
+            skip_negative_y=False,
         )
         oob_after = gl.max_oob_distance(lines, COREONE_BED)
         assert oob_after < oob_before
