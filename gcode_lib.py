@@ -1841,6 +1841,164 @@ def translate_xy_allow_arcs(
 
 
 # ---------------------------------------------------------------------------
+# §4.2b — rotate_xy: rotate XY with optional bed boundary validation
+# ---------------------------------------------------------------------------
+
+def rotate_xy(
+    lines: List[GCodeLine],
+    angle_deg: float,
+    *,
+    pivot_x: Optional[float] = None,
+    pivot_y: Optional[float] = None,
+    bed_min_x: Optional[float] = None,
+    bed_max_x: Optional[float] = None,
+    bed_min_y: Optional[float] = None,
+    bed_max_y: Optional[float] = None,
+    margin: float = 0.0,
+    xy_decimals: int = DEFAULT_XY_DECIMALS,
+    other_decimals: int = DEFAULT_OTHER_DECIMALS,
+    initial_state: Optional[ModalState] = None,
+) -> List[GCodeLine]:
+    """Rotate XY coordinates by *angle_deg* degrees (counter-clockwise positive).
+
+    Handles G0/G1 moves **and** G2/G3 arcs natively — no prior
+    linearization required.  The I/J arc-centre offsets are rotated by the
+    same angle so arcs remain geometrically correct.
+
+    Parameters
+    ----------
+    lines:         Input G-code line list.
+    angle_deg:     Rotation angle in degrees.  Positive = counter-clockwise.
+    pivot_x, pivot_y:
+        Centre of rotation.  When ``None`` (the default), the centroid of
+        the print's bounding box is used.
+    bed_min_x, bed_max_x, bed_min_y, bed_max_y:
+        If **all four** are provided the rotated print is validated against
+        the bed area.  If the rotated print fits, it is re-centred within
+        the available area.  If it does not fit (even after re-centring),
+        :class:`ValueError` is raised.
+    margin:        Inset applied to all four bed edges (mm).
+    xy_decimals:   Decimal places for X/Y output.
+    other_decimals: Decimal places for other axes.
+    initial_state: Optional starting :class:`ModalState`.
+
+    Raises
+    ------
+    ValueError
+        If relative XY mode (G91) is encountered, or if the rotated print
+        exceeds the bed area after re-centring.
+    """
+    theta = math.radians(angle_deg)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+
+    # --- Determine pivot ------------------------------------------------
+    if pivot_x is None or pivot_y is None:
+        bounds = compute_bounds(lines, initial_state=initial_state)
+        if not bounds.valid:
+            return list(lines)          # nothing to rotate
+        if pivot_x is None:
+            pivot_x = bounds.center_x
+        if pivot_y is None:
+            pivot_y = bounds.center_y
+
+    # --- Helper: rotate a point around the pivot ------------------------
+    def _rot(x: float, y: float) -> Tuple[float, float]:
+        dx = x - pivot_x
+        dy = y - pivot_y
+        return (pivot_x + dx * cos_t - dy * sin_t,
+                pivot_y + dx * sin_t + dy * cos_t)
+
+    # --- Helper: rotate a relative vector (I/J offset) ------------------
+    def _rot_vec(i: float, j: float) -> Tuple[float, float]:
+        return (i * cos_t - j * sin_t,
+                i * sin_t + j * cos_t)
+
+    # --- Rotation pass --------------------------------------------------
+    result: List[GCodeLine] = []
+    state = initial_state.copy() if initial_state else ModalState()
+
+    for line in lines:
+        words = line.words
+        has_xy = "X" in words or "Y" in words
+
+        if (line.is_move or line.is_arc) and has_xy:
+            if not state.abs_xy:
+                raise ValueError(
+                    "rotate_xy: relative XY (G91) is not supported. "
+                    "Call to_absolute_xy() first."
+                )
+
+            # Resolve full absolute position then rotate
+            x_abs = words.get("X", state.x)
+            y_abs = words.get("Y", state.y)
+            xr, yr = _rot(x_abs, y_abs)
+
+            code, comment = split_comment(line.raw)
+            new_code = code
+            new_words = dict(words)
+
+            if "X" in words:
+                new_words["X"] = xr
+                new_code = replace_or_append(new_code, "X", xr, xy_decimals, other_decimals)
+            if "Y" in words:
+                new_words["Y"] = yr
+                new_code = replace_or_append(new_code, "Y", yr, xy_decimals, other_decimals)
+
+            # Rotate arc I/J offsets
+            if line.is_arc:
+                i_val = words.get("I", 0.0)
+                j_val = words.get("J", 0.0)
+                if state.ij_relative:
+                    # Relative IJ: rotate the offset vector
+                    ir, jr = _rot_vec(i_val, j_val)
+                else:
+                    # Absolute IJ: rotate as a point around the pivot
+                    ir, jr = _rot(i_val, j_val)
+                if "I" in words or not state.ij_relative:
+                    new_words["I"] = ir
+                    new_code = replace_or_append(new_code, "I", ir, xy_decimals, other_decimals)
+                if "J" in words or not state.ij_relative:
+                    new_words["J"] = jr
+                    new_code = replace_or_append(new_code, "J", jr, xy_decimals, other_decimals)
+
+            new_raw = new_code.rstrip() + ("" if not comment else " " + comment.lstrip())
+            result.append(GCodeLine(
+                raw=new_raw, command=line.command, words=new_words, comment=comment
+            ))
+        else:
+            result.append(line)
+
+        advance_state(state, line)
+
+    # --- Bed boundary validation and re-centring ------------------------
+    has_bed = (bed_min_x is not None and bed_max_x is not None
+               and bed_min_y is not None and bed_max_y is not None)
+    if has_bed:
+        rb = compute_bounds(result)
+        if rb.valid:
+            avail_x = (bed_max_x - bed_min_x) - 2 * margin
+            avail_y = (bed_max_y - bed_min_y) - 2 * margin
+            if rb.width > avail_x + EPS or rb.height > avail_y + EPS:
+                raise ValueError(
+                    f"rotate_xy: rotated print ({rb.width:.2f} x {rb.height:.2f} mm) "
+                    f"exceeds available bed area ({avail_x:.2f} x {avail_y:.2f} mm)."
+                )
+            bed_cx = (bed_min_x + bed_max_x) / 2
+            bed_cy = (bed_min_y + bed_max_y) / 2
+            dx = bed_cx - rb.center_x
+            dy = bed_cy - rb.center_y
+            if abs(dx) > EPS or abs(dy) > EPS:
+                result = translate_xy_allow_arcs(
+                    result, dx, dy,
+                    xy_decimals=xy_decimals,
+                    other_decimals=other_decimals,
+                )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # §4.3 — Out-of-bounds detection
 # ---------------------------------------------------------------------------
 
