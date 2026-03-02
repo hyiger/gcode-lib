@@ -74,6 +74,7 @@ tests/
 - `apply_xy_transform(lines, fn)` — arbitrary `fn(x, y) -> (x', y')`
 - `apply_xy_transform_by_layer(lines, fn, z_min, z_max)` — transform only layers within Z range
 - `apply_skew(lines, skew_deg)` — Marlin M852-compatible skew correction
+- `rotate_xy(lines, angle_deg, pivot_x, pivot_y, bed_min/max_x/y, margin)` — rotate XY with optional bed validation; arc-safe
 - `translate_xy(lines, dx, dy)` — shift XY coordinates (G1 only; use `translate_xy_allow_arcs` for arcs)
 
 ### Statistics

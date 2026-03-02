@@ -1,4 +1,4 @@
-"""Tests for gcode_lib transforms: linearize_arcs, apply_xy_transform, apply_skew, translate_xy."""
+"""Tests for gcode_lib transforms: linearize_arcs, apply_xy_transform, apply_skew, translate_xy, rotate_xy."""
 
 from __future__ import annotations
 
@@ -381,3 +381,149 @@ def test_linearize_then_skew_x_monotone_for_positive_y():
         # Every X should be shifted by (10 * k) relative to original
         orig_x = ln.words["X"] - 10.0 * k  # un-skew
         assert orig_x >= -0.001  # original was non-negative
+
+
+# ---------------------------------------------------------------------------
+# rotate_xy
+# ---------------------------------------------------------------------------
+
+class TestRotateXY:
+    """Tests for rotate_xy transform."""
+
+    def test_zero_rotation_is_identity(self):
+        """0° rotation should leave coordinates unchanged."""
+        lines = gl.parse_lines("G90\nG1 X10 Y20\nG1 X30 Y40")
+        result = gl.rotate_xy(lines, 0.0)
+        g1s = [ln for ln in result if ln.command == "G1"]
+        assert g1s[0].words["X"] == pytest.approx(10.0, abs=1e-3)
+        assert g1s[0].words["Y"] == pytest.approx(20.0, abs=1e-3)
+        assert g1s[1].words["X"] == pytest.approx(30.0, abs=1e-3)
+        assert g1s[1].words["Y"] == pytest.approx(40.0, abs=1e-3)
+
+    def test_90_degree_rotation(self):
+        """90° CCW rotation of a point (20, 0) around origin (0,0) → (0, 20)."""
+        lines = gl.parse_lines("G90\nG1 X20 Y0")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)
+        g1 = [ln for ln in result if ln.command == "G1"][0]
+        assert g1.words["X"] == pytest.approx(0.0, abs=1e-3)
+        assert g1.words["Y"] == pytest.approx(20.0, abs=1e-3)
+
+    def test_negative_90_degree_rotation(self):
+        """−90° (CW) rotation of (0, 10) around origin → (10, 0)."""
+        lines = gl.parse_lines("G90\nG1 X0 Y10")
+        result = gl.rotate_xy(lines, -90.0, pivot_x=0.0, pivot_y=0.0)
+        g1 = [ln for ln in result if ln.command == "G1"][0]
+        assert g1.words["X"] == pytest.approx(10.0, abs=1e-3)
+        assert g1.words["Y"] == pytest.approx(0.0, abs=1e-3)
+
+    def test_45_degree_rotation(self):
+        """45° CCW rotation of (10, 0) around origin → (7.071, 7.071)."""
+        lines = gl.parse_lines("G90\nG1 X10 Y0")
+        result = gl.rotate_xy(lines, 45.0, pivot_x=0.0, pivot_y=0.0)
+        g1 = [ln for ln in result if ln.command == "G1"][0]
+        expected = 10.0 * math.cos(math.radians(45))
+        assert g1.words["X"] == pytest.approx(expected, abs=1e-3)
+        assert g1.words["Y"] == pytest.approx(expected, abs=1e-3)
+
+    def test_180_degree_rotation_square(self):
+        """180° rotation of a square path flips all coordinates around center."""
+        lines = gl.parse_lines(
+            "G90\nG1 X0 Y0\nG1 X10 Y0\nG1 X10 Y10\nG1 X0 Y10"
+        )
+        # Print center is (5, 5); 180° around center flips each point
+        result = gl.rotate_xy(lines, 180.0)
+        g1s = [ln for ln in result if ln.command == "G1"]
+        # (0,0) → (10,10), (10,0) → (0,10), (10,10) → (0,0), (0,10) → (10,0)
+        assert g1s[0].words["X"] == pytest.approx(10.0, abs=1e-3)
+        assert g1s[0].words["Y"] == pytest.approx(10.0, abs=1e-3)
+        assert g1s[1].words["X"] == pytest.approx(0.0, abs=1e-3)
+        assert g1s[1].words["Y"] == pytest.approx(10.0, abs=1e-3)
+        assert g1s[2].words["X"] == pytest.approx(0.0, abs=1e-3)
+        assert g1s[2].words["Y"] == pytest.approx(0.0, abs=1e-3)
+        assert g1s[3].words["X"] == pytest.approx(10.0, abs=1e-3)
+        assert g1s[3].words["Y"] == pytest.approx(0.0, abs=1e-3)
+
+    def test_custom_pivot(self):
+        """Rotation around a custom pivot point."""
+        lines = gl.parse_lines("G90\nG1 X20 Y10")
+        # Rotate (20, 10) by 90° around (10, 10) → (10, 20)
+        result = gl.rotate_xy(lines, 90.0, pivot_x=10.0, pivot_y=10.0)
+        g1 = [ln for ln in result if ln.command == "G1"][0]
+        assert g1.words["X"] == pytest.approx(10.0, abs=1e-3)
+        assert g1.words["Y"] == pytest.approx(20.0, abs=1e-3)
+
+    def test_arc_rotation_relative_ij(self):
+        """G2 arc with relative I/J: both endpoint and I/J vector are rotated."""
+        # Quarter-circle arc: from (10,0) to (0,10) with centre at (0,0), I=-10 J=0
+        lines = gl.parse_lines("G90\nG91.1\nG1 X10 Y0\nG3 X0 Y10 I-10 J0")
+        # Rotate 90° CCW around origin: start (10,0)→(0,10), end (0,10)→(-10,0)
+        # I/J vector (-10,0) rotated 90° CCW → (0,-10)
+        result = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)
+        arcs = [ln for ln in result if ln.is_arc]
+        assert len(arcs) == 1
+        arc = arcs[0]
+        assert arc.words["X"] == pytest.approx(-10.0, abs=1e-3)
+        assert arc.words["Y"] == pytest.approx(0.0, abs=1e-3)
+        assert arc.words["I"] == pytest.approx(0.0, abs=1e-3)
+        assert arc.words["J"] == pytest.approx(-10.0, abs=1e-3)
+
+    def test_bed_validation_recenters(self):
+        """Rotated print should be re-centred within the bed."""
+        # Square at (0,0)-(10,10), rotate 0° with bed 0-100 x 0-100
+        lines = gl.parse_lines("G90\nG1 X0 Y0\nG1 X10 Y10")
+        result = gl.rotate_xy(
+            lines, 0.0,
+            bed_min_x=0, bed_max_x=100, bed_min_y=0, bed_max_y=100,
+        )
+        bounds = gl.compute_bounds(result)
+        # Should be centred at (50, 50)
+        assert bounds.center_x == pytest.approx(50.0, abs=1e-3)
+        assert bounds.center_y == pytest.approx(50.0, abs=1e-3)
+
+    def test_bed_validation_raises_if_too_large(self):
+        """ValueError when rotated print exceeds bed area."""
+        lines = gl.parse_lines("G90\nG1 X0 Y0\nG1 X100 Y100")
+        with pytest.raises(ValueError, match="exceeds available bed area"):
+            gl.rotate_xy(
+                lines, 45.0,
+                bed_min_x=0, bed_max_x=100, bed_min_y=0, bed_max_y=100,
+            )
+
+    def test_bed_validation_with_margin(self):
+        """Margin reduces available bed area."""
+        # 10x10 print on a 20x20 bed with 6mm margin → available 8x8 → doesn't fit
+        lines = gl.parse_lines("G90\nG1 X0 Y0\nG1 X10 Y10")
+        with pytest.raises(ValueError, match="exceeds available bed area"):
+            gl.rotate_xy(
+                lines, 0.0,
+                bed_min_x=0, bed_max_x=20, bed_min_y=0, bed_max_y=20,
+                margin=6.0,
+            )
+
+    def test_g91_raises_valueerror(self):
+        """Relative XY mode should raise ValueError."""
+        lines = gl.parse_lines("G91\nG1 X10 Y10")
+        with pytest.raises(ValueError, match="relative XY"):
+            gl.rotate_xy(lines, 45.0)
+
+    def test_preserves_z_and_e(self):
+        """Z and E coordinates must not be modified by rotation."""
+        lines = gl.parse_lines("G90\nG1 X10 Y0 Z5.0 E1.5")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)
+        g1 = [ln for ln in result if ln.command == "G1"][0]
+        assert g1.words["Z"] == pytest.approx(5.0)
+        assert g1.words["E"] == pytest.approx(1.5)
+
+    def test_comments_preserved(self):
+        """Comments should be preserved after rotation."""
+        lines = gl.parse_lines("G90\nG1 X10 Y0 ; perimeter")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)
+        g1 = [ln for ln in result if ln.command == "G1"][0]
+        assert "; perimeter" in g1.raw
+
+    def test_non_move_lines_unchanged(self):
+        """Non-move lines (M commands, comments) should pass through unchanged."""
+        lines = gl.parse_lines("G90\nM104 S200\n; comment\nG1 X10 Y10")
+        result = gl.rotate_xy(lines, 45.0, pivot_x=0.0, pivot_y=0.0)
+        assert result[1].raw == "M104 S200"
+        assert result[2].raw == "; comment"

@@ -345,6 +345,41 @@ gl.save(gf, "corrected.gcode")
 
 The transform applied is: `x' = x + (y - y_ref) * tan(skew_deg)`, `y' = y`.
 
+### Rotation — arc-safe, with optional bed validation
+
+`rotate_xy()` rotates the entire print by a given angle.  It handles G2/G3 arcs natively
+(both endpoints and I/J offsets are rotated) so no linearization is required.
+
+```python
+gf = gl.load("print.gcode")
+
+# Rotate 30° counter-clockwise around the print's centre
+lines = gl.rotate_xy(gf.lines, angle_deg=30.0)
+gf.lines = lines
+gl.save(gf, "rotated.gcode")
+```
+
+Supply bed dimensions to automatically re-centre and validate boundaries:
+
+```python
+# Rotate and ensure the result fits within the bed
+lines = gl.rotate_xy(
+    gf.lines,
+    angle_deg=45.0,
+    bed_min_x=0, bed_max_x=250,
+    bed_min_y=0, bed_max_y=220,
+    margin=5.0,
+)
+```
+
+If the rotated print does not fit within `(bed − 2×margin)`, a `ValueError` is raised.
+
+You can specify a custom pivot point (default is the print's bounding-box centre):
+
+```python
+lines = gl.rotate_xy(gf.lines, angle_deg=90.0, pivot_x=125.0, pivot_y=110.0)
+```
+
 ### Arbitrary XY transform
 
 Supply any `fn(x, y) -> (x_new, y_new)` function:
@@ -1291,6 +1326,11 @@ to_absolute_xy(lines, initial_state=None,
 translate_xy_allow_arcs(lines, dx, dy,
                         xy_decimals=3, other_decimals=5,
                         initial_state=None) -> List[GCodeLine]
+
+rotate_xy(lines, angle_deg, *, pivot_x=None, pivot_y=None,
+          bed_min_x=None, bed_max_x=None, bed_min_y=None, bed_max_y=None,
+          margin=0.0, xy_decimals=3, other_decimals=5,
+          initial_state=None) -> List[GCodeLine]
 
 apply_xy_transform_by_layer(lines, transform_fn,
                             z_min=None, z_max=None,
