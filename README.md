@@ -1315,41 +1315,51 @@ linearize_arcs(lines, seg_mm=0.20, max_deg=5.0,
                initial_state=None) -> List[GCodeLine]
 
 apply_xy_transform(lines, fn, xy_decimals=3, other_decimals=5,
-                   initial_state=None) -> List[GCodeLine]
+                   initial_state=None,
+                   skip_negative_y=True) -> List[GCodeLine]
 
 apply_skew(lines, skew_deg, y_ref=0.0,
            xy_decimals=3, other_decimals=5,
-           initial_state=None) -> List[GCodeLine]
+           initial_state=None,
+           skip_negative_y=True) -> List[GCodeLine]
 
 translate_xy(lines, dx, dy,
              xy_decimals=3, other_decimals=5,
-             initial_state=None) -> List[GCodeLine]
+             initial_state=None,
+             skip_negative_y=True) -> List[GCodeLine]
 
 to_absolute_xy(lines, initial_state=None,
                xy_decimals=3, other_decimals=5) -> List[GCodeLine]
 
 translate_xy_allow_arcs(lines, dx, dy,
                         xy_decimals=3, other_decimals=5,
-                        initial_state=None) -> List[GCodeLine]
+                        initial_state=None,
+                        skip_negative_y=True) -> List[GCodeLine]
 
 rotate_xy(lines, angle_deg, *, pivot_x=None, pivot_y=None,
           bed_min_x=None, bed_max_x=None, bed_min_y=None, bed_max_y=None,
           margin=0.0, xy_decimals=3, other_decimals=5,
-          initial_state=None) -> List[GCodeLine]
+          initial_state=None,
+          skip_negative_y=True) -> List[GCodeLine]
 
 apply_xy_transform_by_layer(lines, transform_fn,
                             z_min=None, z_max=None,
                             xy_decimals=3, other_decimals=5,
-                            initial_state=None) -> List[GCodeLine]
+                            initial_state=None,
+                            skip_negative_y=True) -> List[GCodeLine]
 
 recenter_to_bed(lines, bed_min_x, bed_max_x, bed_min_y, bed_max_y,
-                margin=0.0, mode="center") -> List[GCodeLine]
+                margin=0.0, mode="center", *,
+                xy_decimals=3, other_decimals=5,
+                initial_state=None,
+                skip_negative_y=True) -> List[GCodeLine]
 ```
 
 #### Statistics
 
 ```
 compute_bounds(lines, extruding_only=False, include_arcs=True,
+               skip_negative_y=False,
                arc_seg_mm=0.20, arc_max_deg=5.0,
                initial_state=None) -> Bounds
 

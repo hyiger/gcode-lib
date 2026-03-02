@@ -68,17 +68,22 @@ tests/
 - `iter_layers(lines)` → yields `(z_height, layer_lines)` — group lines by Z level
 
 ### Transforms
+
+All transform functions accept `skip_negative_y=True` (default) to skip moves whose effective
+absolute Y position is negative — this prevents PrusaSlicer purge lines and nozzle wipes from
+being modified.  Pass `skip_negative_y=False` to transform all moves.
+
 - `to_absolute_xy(lines)` — convert all G91 relative XY moves to absolute G90 (**resolves G91 pitfall**)
 - `linearize_arcs(lines, seg_mm, max_deg)` — G2/G3 → G1 segments
-- `translate_xy_allow_arcs(lines, dx, dy)` — shift XY including arcs (no prior linearization needed)
-- `apply_xy_transform(lines, fn)` — arbitrary `fn(x, y) -> (x', y')`
-- `apply_xy_transform_by_layer(lines, fn, z_min, z_max)` — transform only layers within Z range
-- `apply_skew(lines, skew_deg)` — Marlin M852-compatible skew correction
-- `rotate_xy(lines, angle_deg, pivot_x, pivot_y, bed_min/max_x/y, margin)` — rotate XY with optional bed validation; arc-safe
-- `translate_xy(lines, dx, dy)` — shift XY coordinates (G1 only; use `translate_xy_allow_arcs` for arcs)
+- `translate_xy_allow_arcs(lines, dx, dy, skip_negative_y=True)` — shift XY including arcs (no prior linearization needed)
+- `apply_xy_transform(lines, fn, skip_negative_y=True)` — arbitrary `fn(x, y) -> (x', y')`
+- `apply_xy_transform_by_layer(lines, fn, z_min, z_max, skip_negative_y=True)` — transform only layers within Z range
+- `apply_skew(lines, skew_deg, skip_negative_y=True)` — Marlin M852-compatible skew correction
+- `rotate_xy(lines, angle_deg, pivot_x, pivot_y, bed_min/max_x/y, margin, skip_negative_y=True)` — rotate XY with optional bed validation; arc-safe
+- `translate_xy(lines, dx, dy, skip_negative_y=True)` — shift XY coordinates (G1 only; use `translate_xy_allow_arcs` for arcs)
 
 ### Statistics
-- `compute_bounds(lines, extruding_only, include_arcs)` → `Bounds`
+- `compute_bounds(lines, extruding_only, include_arcs, skip_negative_y=False)` → `Bounds`
 - `compute_stats(lines)` → `GCodeStats`
 - `analyze_xy_transform(lines, fn)` → `dict` — dry-run: max_dx, max_dy, max_displacement, line_number, move_count
 
