@@ -414,6 +414,12 @@ class TestPresets:
         assert p["bed_y"] == 220.0
         assert p["max_z"] == 250.0
 
+    def test_coreonel_preset(self):
+        p = gl.PRINTER_PRESETS["COREONEL"]
+        assert p["bed_x"] == 300.0
+        assert p["bed_y"] == 300.0
+        assert p["max_z"] == 330.0
+
     def test_all_printer_presets_have_required_keys(self):
         for name, preset in gl.PRINTER_PRESETS.items():
             assert "bed_x" in preset, f"{name} missing bed_x"
@@ -435,6 +441,88 @@ class TestPresets:
             assert "bed"    in preset, f"{name} missing bed"
             assert "fan"    in preset, f"{name} missing fan"
             assert "retract" in preset, f"{name} missing retract"
+
+
+# ===========================================================================
+# §5.1 — detect_printer_preset
+# ===========================================================================
+
+class TestDetectPrinterPreset:
+    def test_detect_coreone(self):
+        lines = gl.parse_lines('G90\nM862.3 P "COREONE"\nG1 X10 Y10\n')
+        assert gl.detect_printer_preset(lines) == "COREONE"
+
+    def test_detect_coreonel(self):
+        lines = gl.parse_lines('G90\nM862.3 P "COREONEL"\nG1 X10 Y10\n')
+        assert gl.detect_printer_preset(lines) == "COREONEL"
+
+    def test_detect_mk4(self):
+        lines = gl.parse_lines('M862.3 P "MK4"\n')
+        assert gl.detect_printer_preset(lines) == "MK4"
+
+    def test_detect_without_quotes(self):
+        lines = gl.parse_lines('M862.3 P COREONE\n')
+        assert gl.detect_printer_preset(lines) == "COREONE"
+
+    def test_detect_case_insensitive(self):
+        lines = gl.parse_lines('M862.3 P "coreone"\n')
+        assert gl.detect_printer_preset(lines) == "COREONE"
+
+    def test_no_m862_returns_none(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y10\n")
+        assert gl.detect_printer_preset(lines) is None
+
+    def test_unknown_printer_returns_none(self):
+        lines = gl.parse_lines('M862.3 P "UNKNOWNPRINTER"\n')
+        assert gl.detect_printer_preset(lines) is None
+
+    def test_empty_lines_returns_none(self):
+        assert gl.detect_printer_preset([]) is None
+
+    def test_other_m862_subcommands_ignored(self):
+        """M862.1 (nozzle) and M862.5 (firmware) should not match."""
+        lines = gl.parse_lines('M862.1 P0.6 A0 F0\nM862.5 P2\n')
+        assert gl.detect_printer_preset(lines) is None
+
+    def test_detect_in_realistic_gcode(self):
+        """Detect preset from a realistic start-gcode snippet."""
+        src = (
+            "M17\n"
+            'M862.1 P0.6 A0 F0\n'
+            'M862.3 P "COREONE"\n'
+            'M862.5 P2\n'
+            'M862.6 P"Input shaper"\n'
+            "M115 U6.3.4+10511\n"
+        )
+        lines = gl.parse_lines(src)
+        assert gl.detect_printer_preset(lines) == "COREONE"
+
+
+class TestDetectPrintVolume:
+    def test_returns_volume_for_coreone(self):
+        lines = gl.parse_lines('M862.3 P "COREONE"\n')
+        vol = gl.detect_print_volume(lines)
+        assert vol == {"bed_x": 250.0, "bed_y": 220.0, "max_z": 250.0}
+
+    def test_returns_volume_for_coreonel(self):
+        lines = gl.parse_lines('M862.3 P "COREONEL"\n')
+        vol = gl.detect_print_volume(lines)
+        assert vol == {"bed_x": 300.0, "bed_y": 300.0, "max_z": 330.0}
+
+    def test_returns_none_when_no_printer(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y10\n")
+        assert gl.detect_print_volume(lines) is None
+
+    def test_returns_none_for_unknown_printer(self):
+        lines = gl.parse_lines('M862.3 P "MYSTERY"\n')
+        assert gl.detect_print_volume(lines) is None
+
+    def test_returned_dict_is_a_copy(self):
+        """Mutating the result must not change PRINTER_PRESETS."""
+        lines = gl.parse_lines('M862.3 P "MK4"\n')
+        vol = gl.detect_print_volume(lines)
+        vol["bed_x"] = 9999.0
+        assert gl.PRINTER_PRESETS["MK4"]["bed_x"] == 250.0
 
 
 # ===========================================================================
