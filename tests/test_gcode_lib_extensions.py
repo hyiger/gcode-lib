@@ -441,6 +441,16 @@ class TestPresets:
             assert "bed"    in preset, f"{name} missing bed"
             assert "fan"    in preset, f"{name} missing fan"
             assert "retract" in preset, f"{name} missing retract"
+            assert "temp_min" in preset, f"{name} missing temp_min"
+            assert "temp_max" in preset, f"{name} missing temp_max"
+            assert "speed" in preset, f"{name} missing speed"
+            assert "enclosure" in preset, f"{name} missing enclosure"
+            assert preset["temp_min"] < preset["temp_max"], (
+                f"{name}: temp_min must be less than temp_max"
+            )
+            assert preset["temp_min"] <= preset["hotend"] <= preset["temp_max"], (
+                f"{name}: hotend must be within temp_min..temp_max"
+            )
 
 
 # ===========================================================================

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
+import json
 import math
 import os
 import re
@@ -42,10 +43,13 @@ import struct
 import subprocess
 import sys
 import tempfile
+import uuid
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 __version__ = "1.7.0"
 
@@ -2504,35 +2508,147 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "bed": 60,
         "fan": 100,
         "retract": 0.8,
+        "temp_min": 190,
+        "temp_max": 230,
+        "speed": 60,
+        "enclosure": False,
     },
     "PETG": {
         "hotend": 240,
         "bed": 80,
         "fan": 40,
         "retract": 0.8,
+        "temp_min": 220,
+        "temp_max": 260,
+        "speed": 50,
+        "enclosure": False,
     },
     "ASA": {
         "hotend": 260,
         "bed": 100,
         "fan": 20,
         "retract": 0.8,
+        "temp_min": 240,
+        "temp_max": 280,
+        "speed": 45,
+        "enclosure": True,
     },
     "TPU": {
         "hotend": 230,
         "bed": 50,
         "fan": 50,
         "retract": 1.5,
+        "temp_min": 210,
+        "temp_max": 250,
+        "speed": 25,
+        "enclosure": False,
     },
     "ABS": {
         "hotend": 255,
         "bed": 100,
         "fan": 20,
         "retract": 0.8,
+        "temp_min": 230,
+        "temp_max": 270,
+        "speed": 45,
+        "enclosure": True,
+    },
+    "PA": {
+        "hotend": 260,
+        "bed": 80,
+        "fan": 30,
+        "retract": 1.0,
+        "temp_min": 240,
+        "temp_max": 280,
+        "speed": 40,
+        "enclosure": True,
+    },
+    "PC": {
+        "hotend": 275,
+        "bed": 110,
+        "fan": 20,
+        "retract": 0.8,
+        "temp_min": 260,
+        "temp_max": 300,
+        "speed": 40,
+        "enclosure": True,
+    },
+    "PCTG": {
+        "hotend": 250,
+        "bed": 80,
+        "fan": 50,
+        "retract": 0.8,
+        "temp_min": 230,
+        "temp_max": 270,
+        "speed": 50,
+        "enclosure": False,
+    },
+    "PP": {
+        "hotend": 240,
+        "bed": 85,
+        "fan": 30,
+        "retract": 1.2,
+        "temp_min": 220,
+        "temp_max": 260,
+        "speed": 35,
+        "enclosure": True,
+    },
+    "PPA": {
+        "hotend": 280,
+        "bed": 100,
+        "fan": 20,
+        "retract": 0.8,
+        "temp_min": 260,
+        "temp_max": 310,
+        "speed": 40,
+        "enclosure": True,
+    },
+    "HIPS": {
+        "hotend": 230,
+        "bed": 100,
+        "fan": 20,
+        "retract": 0.8,
+        "temp_min": 220,
+        "temp_max": 250,
+        "speed": 45,
+        "enclosure": True,
+    },
+    "PLA-CF": {
+        "hotend": 220,
+        "bed": 60,
+        "fan": 100,
+        "retract": 0.8,
+        "temp_min": 200,
+        "temp_max": 240,
+        "speed": 50,
+        "enclosure": False,
+    },
+    "PETG-CF": {
+        "hotend": 250,
+        "bed": 80,
+        "fan": 30,
+        "retract": 0.8,
+        "temp_min": 230,
+        "temp_max": 270,
+        "speed": 45,
+        "enclosure": False,
+    },
+    "PA-CF": {
+        "hotend": 270,
+        "bed": 80,
+        "fan": 20,
+        "retract": 1.0,
+        "temp_min": 250,
+        "temp_max": 290,
+        "speed": 40,
+        "enclosure": True,
     },
 }
 """Common filament temperature and retraction settings.
 
-Keys: ``hotend`` (°C), ``bed`` (°C), ``fan`` (0–100 %), ``retract`` (mm).
+Keys: ``hotend`` (°C), ``bed`` (°C), ``fan`` (0–100 %), ``retract`` (mm),
+``temp_min`` (°C), ``temp_max`` (°C), ``speed`` (mm/s),
+``enclosure`` (bool — whether an enclosure is recommended).
 """
 
 _M862_3_RE = re.compile(
@@ -3014,3 +3130,308 @@ def slice_batch(
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as pool:
         futures = [pool.submit(_do_one, inp) for inp in inputs]
         return [f.result() for f in futures]
+
+
+# ---------------------------------------------------------------------------
+# §10 — PrusaLink API client
+# ---------------------------------------------------------------------------
+
+
+class PrusaLinkError(Exception):
+    """Raised when a PrusaLink API call fails.
+
+    Attributes
+    ----------
+    status_code: HTTP status code (0 for connection/timeout errors).
+    message:     Human-readable error description.
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        self.status_code = status_code
+        self.message = message
+        super().__init__(f"PrusaLink error {status_code}: {message}")
+
+
+@dataclass
+class PrusaLinkInfo:
+    """Printer identification from ``GET /api/version``.
+
+    Attributes
+    ----------
+    api:      API version string.
+    server:   Server version string.
+    original: Original PrusaLink version.
+    text:     Human-readable description.
+    """
+    api: str
+    server: str
+    original: str
+    text: str
+
+
+@dataclass
+class PrusaLinkStatus:
+    """Printer status from ``GET /api/v1/status``.
+
+    Attributes
+    ----------
+    printer_state: Current state (``"IDLE"``, ``"PRINTING"``, ``"BUSY"``, …).
+    temp_nozzle:   Current nozzle temperature in °C (or ``None``).
+    temp_bed:      Current bed temperature in °C (or ``None``).
+    raw:           Full JSON response for extensibility.
+    """
+    printer_state: str
+    temp_nozzle: Optional[float]
+    temp_bed: Optional[float]
+    raw: dict
+
+
+@dataclass
+class PrusaLinkJob:
+    """Active job info from ``GET /api/v1/job``.
+
+    Attributes
+    ----------
+    job_id:         Numeric job ID (or ``None`` if no job).
+    progress:       Print progress 0–100 (or ``None``).
+    time_remaining: Estimated seconds remaining (or ``None``).
+    state:          Job state string.
+    raw:            Full JSON response for extensibility.
+    """
+    job_id: Optional[int]
+    progress: Optional[float]
+    time_remaining: Optional[int]
+    state: str
+    raw: dict
+
+
+def _prusalink_request(
+    base_url: str,
+    api_key: str,
+    method: str,
+    path: str,
+    data: Optional[bytes] = None,
+    content_type: Optional[str] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+    timeout: float = 30.0,
+) -> bytes:
+    """Make an HTTP request to PrusaLink and return the raw response body.
+
+    Parameters
+    ----------
+    base_url:       Printer base URL, e.g. ``"http://192.168.1.100"``.
+    api_key:        PrusaLink API key (sent as ``X-Api-Key`` header).
+    method:         HTTP method (``"GET"``, ``"PUT"``, ``"POST"``, ``"DELETE"``).
+    path:           API path, e.g. ``"/api/version"``.
+    data:           Optional request body bytes.
+    content_type:   Optional ``Content-Type`` header value.
+    extra_headers:  Additional headers to include.
+    timeout:        Request timeout in seconds.
+
+    Returns
+    -------
+    bytes
+        Raw response body.
+
+    Raises
+    ------
+    PrusaLinkError
+        On HTTP errors or connection failures.
+    """
+    url = base_url.rstrip("/") + path
+    headers: Dict[str, str] = {"X-Api-Key": api_key}
+    if content_type:
+        headers["Content-Type"] = content_type
+    if extra_headers:
+        headers.update(extra_headers)
+
+    req = Request(url, data=data, headers=headers, method=method)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise PrusaLinkError(exc.code, body or str(exc)) from exc
+    except URLError as exc:
+        raise PrusaLinkError(0, str(exc.reason)) from exc
+    except TimeoutError as exc:
+        raise PrusaLinkError(0, "Connection timed out") from exc
+
+
+def prusalink_get_version(
+    base_url: str,
+    api_key: str,
+    timeout: float = 10.0,
+) -> PrusaLinkInfo:
+    """Query printer identification via ``GET /api/version``.
+
+    This is the lightest endpoint and works well as a connectivity test.
+
+    Parameters
+    ----------
+    base_url: Printer base URL.
+    api_key:  PrusaLink API key.
+    timeout:  Request timeout in seconds.
+
+    Returns
+    -------
+    PrusaLinkInfo
+    """
+    body = _prusalink_request(base_url, api_key, "GET", "/api/version",
+                              timeout=timeout)
+    d = json.loads(body)
+    return PrusaLinkInfo(
+        api=d.get("api", ""),
+        server=d.get("server", ""),
+        original=d.get("original", ""),
+        text=d.get("text", ""),
+    )
+
+
+def prusalink_get_status(
+    base_url: str,
+    api_key: str,
+    timeout: float = 10.0,
+) -> PrusaLinkStatus:
+    """Query current printer status via ``GET /api/v1/status``.
+
+    Parameters
+    ----------
+    base_url: Printer base URL.
+    api_key:  PrusaLink API key.
+    timeout:  Request timeout in seconds.
+
+    Returns
+    -------
+    PrusaLinkStatus
+    """
+    body = _prusalink_request(base_url, api_key, "GET", "/api/v1/status",
+                              timeout=timeout)
+    d = json.loads(body)
+    printer = d.get("printer", {})
+    return PrusaLinkStatus(
+        printer_state=printer.get("state", "UNKNOWN"),
+        temp_nozzle=printer.get("temp_nozzle"),
+        temp_bed=printer.get("temp_bed"),
+        raw=d,
+    )
+
+
+def prusalink_get_job(
+    base_url: str,
+    api_key: str,
+    timeout: float = 10.0,
+) -> PrusaLinkJob:
+    """Query active print job via ``GET /api/v1/job``.
+
+    Parameters
+    ----------
+    base_url: Printer base URL.
+    api_key:  PrusaLink API key.
+    timeout:  Request timeout in seconds.
+
+    Returns
+    -------
+    PrusaLinkJob
+    """
+    body = _prusalink_request(base_url, api_key, "GET", "/api/v1/job",
+                              timeout=timeout)
+    d = json.loads(body)
+    return PrusaLinkJob(
+        job_id=d.get("id"),
+        progress=d.get("progress"),
+        time_remaining=d.get("time_remaining"),
+        state=d.get("state", "UNKNOWN"),
+        raw=d,
+    )
+
+
+def _build_multipart(
+    fields: Dict[str, str],
+    file_field: str,
+    file_name: str,
+    file_data: bytes,
+    file_content_type: str = "application/octet-stream",
+) -> Tuple[bytes, str]:
+    """Build a multipart/form-data body from fields and one file.
+
+    Returns ``(body_bytes, content_type_header)`` including the boundary.
+    """
+    boundary = uuid.uuid4().hex
+    parts: List[bytes] = []
+    for key, val in fields.items():
+        parts.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'
+            f"{val}\r\n".encode()
+        )
+    parts.append(
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{file_field}";'
+        f' filename="{file_name}"\r\n'
+        f"Content-Type: {file_content_type}\r\n\r\n".encode()
+    )
+    parts.append(file_data)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+    ct = f"multipart/form-data; boundary={boundary}"
+    return body, ct
+
+
+def prusalink_upload(
+    base_url: str,
+    api_key: str,
+    gcode_path: str,
+    print_after_upload: bool = False,
+    timeout: float = 120.0,
+) -> str:
+    """Upload a G-code file to the printer via PrusaLink.
+
+    Uses ``PUT /api/v1/files/usb/<filename>`` with the raw file body.
+
+    Parameters
+    ----------
+    base_url:           Printer base URL.
+    api_key:            PrusaLink API key.
+    gcode_path:         Local path to the ``.gcode`` file.
+    print_after_upload: If ``True``, start printing immediately after upload.
+    timeout:            Request timeout in seconds (uploads can be slow).
+
+    Returns
+    -------
+    str
+        The filename as stored on the printer.
+
+    Raises
+    ------
+    PrusaLinkError
+        On HTTP or connection errors.
+    FileNotFoundError
+        If *gcode_path* does not exist.
+    """
+    p = Path(gcode_path)
+    if not p.is_file():
+        raise FileNotFoundError(f"G-code file not found: {gcode_path}")
+
+    file_data = p.read_bytes()
+    filename = p.name
+    path = f"/api/v1/files/usb/{filename}"
+
+    extra_headers: Dict[str, str] = {
+        "Content-Length": str(len(file_data)),
+        "Content-Type": "application/octet-stream",
+    }
+    if print_after_upload:
+        extra_headers["Print-After-Upload"] = "1"
+
+    _prusalink_request(
+        base_url, api_key, "PUT", path,
+        data=file_data,
+        extra_headers=extra_headers,
+        timeout=timeout,
+    )
+    return filename
