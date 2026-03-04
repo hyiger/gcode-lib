@@ -51,7 +51,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple, Union
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-__version__ = "1.7.0"
+__version__ = "1.0.0"
 
 # ---------------------------------------------------------------------------
 # Constants
