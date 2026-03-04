@@ -10,7 +10,7 @@ Single-file, stdlib-only Python library for parsing, analysing, and transforming
 - **Python 3.10+** — uses `from __future__ import annotations`.
 - **No third-party runtime deps** — stdlib only (`re`, `math`, `struct`, `zlib`, `base64`,
   `tempfile`, `os`, `sys`, `dataclasses`, `subprocess`, `shutil`, `concurrent.futures`,
-  `pathlib`, `typing`).
+  `pathlib`, `typing`, `json`, `uuid`, `urllib.request`, `urllib.error`).
 - **G91 support**: `apply_xy_transform`, `apply_skew`, and `translate_xy` raise `ValueError`
   for relative moves. Use `to_absolute_xy()` to normalise first.  `translate_xy_allow_arcs`
   also requires G90.
@@ -28,6 +28,7 @@ tests/
   test_gcode_lib_thumbnails.py
   test_gcode_lib_integration.py
   test_gcode_lib_extensions.py
+  test_gcode_lib_prusalink.py
 ```
 
 ## Public API surface
@@ -45,6 +46,10 @@ tests/
 | `PrusaSlicerCapabilities` | Detected slicer flags: `.version_text`, `.has_export_gcode`, … |
 | `RunResult` | CLI result: `.cmd`, `.returncode`, `.stdout`, `.stderr`, `.ok` |
 | `SliceRequest` | Slicing job params: `.input_path`, `.output_path`, `.config_ini`, … |
+| `PrusaLinkError` | Exception for PrusaLink API failures: `.status_code`, `.message` |
+| `PrusaLinkInfo` | Printer identification from `/api/version`: `.api`, `.server`, `.original`, `.text` |
+| `PrusaLinkStatus` | Printer status from `/api/v1/status`: `.printer_state`, `.temp_nozzle`, `.temp_bed`, `.raw` |
+| `PrusaLinkJob` | Active job from `/api/v1/job`: `.job_id`, `.progress`, `.time_remaining`, `.state`, `.raw` |
 
 ### I/O
 - `load(path)` — auto-detects text vs binary
@@ -105,7 +110,7 @@ being modified.  Pass `skip_negative_y=False` to transform all moves.
 
 ### Presets
 - `PRINTER_PRESETS` — dict of `{name: {bed_x, bed_y, max_z}}` (COREONE, COREONEL, MK4, MK3S, MINI, XL)
-- `FILAMENT_PRESETS` — dict of `{name: {hotend, bed, fan, retract}}` (PLA, PETG, ASA, TPU, ABS)
+- `FILAMENT_PRESETS` — dict of `{name: {hotend, bed, fan, retract, temp_min, temp_max, speed, enclosure}}` (PLA, PETG, ASA, TPU, ABS, PA, PC, PCTG, PP, PPA, HIPS, PLA-CF, PETG-CF, PA-CF)
 - `detect_printer_preset(lines)` → `Optional[str]` — detect preset name from `M862.3 P` command in G-code
 - `detect_print_volume(lines)` → `Optional[Dict[str, float]]` — detect print volume (`bed_x`, `bed_y`, `max_z`) from G-code
 
@@ -115,6 +120,12 @@ being modified.  Pass `skip_negative_y=False` to transform all moves.
 - `run_prusaslicer(exe, args, timeout_s)` → `RunResult`
 - `slice_model(exe, req)` → `RunResult`
 - `slice_batch(exe, inputs, output_dir, config_ini, naming, parallelism)` → `List[RunResult]`
+
+### PrusaLink API client
+- `prusalink_get_version(base_url, api_key)` → `PrusaLinkInfo` — connectivity test via `GET /api/version`
+- `prusalink_get_status(base_url, api_key)` → `PrusaLinkStatus` — printer state via `GET /api/v1/status`
+- `prusalink_get_job(base_url, api_key)` → `PrusaLinkJob` — active job via `GET /api/v1/job`
+- `prusalink_upload(base_url, api_key, gcode_path, print_after_upload)` → `str` — upload G-code via `PUT /api/v1/files/usb/<filename>`
 
 ## Constants (tuneable defaults)
 ```python

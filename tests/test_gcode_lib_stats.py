@@ -264,3 +264,30 @@ def test_stats_layer_count_zero_when_no_z():
     lines = gl.parse_lines("G90\nG1 X10 Y20 E1.0")
     stats = gl.compute_stats(lines)
     assert stats.layer_count == 0
+
+
+# ---------------------------------------------------------------------------
+# compute_stats — Z tracking for arcs
+# ---------------------------------------------------------------------------
+
+def test_compute_stats_arc_z_tracked_in_bounds():
+    """Arcs carrying a Z word should contribute to z_min/z_max bounds."""
+    lines = gl.parse_lines("G90\nG1 X10 Y0 Z1\nG3 X0 Y10 I-10 J0 Z5")
+    stats = gl.compute_stats(lines)
+    assert stats.bounds.z_max == pytest.approx(5.0)
+
+
+def test_compute_stats_arc_z_tracked_in_z_heights():
+    """Arcs carrying a Z word should create new z_height entries."""
+    lines = gl.parse_lines("G90\nG1 X10 Y0 Z1\nG3 X0 Y10 I-10 J0 Z3")
+    stats = gl.compute_stats(lines)
+    assert 1.0 in stats.z_heights
+    assert 3.0 in stats.z_heights
+    assert stats.layer_count >= 2
+
+
+def test_compute_stats_arc_z_duplicate_not_added():
+    """Arc Z matching the previous Z should not add a duplicate z_height."""
+    lines = gl.parse_lines("G90\nG1 X10 Y0 Z2\nG3 X0 Y10 I-10 J0 Z2")
+    stats = gl.compute_stats(lines)
+    assert stats.z_heights.count(2.0) == 1
