@@ -43,6 +43,7 @@ py-modules = ["gcode_lib"]
 include = [
     "gcode_lib.py",
     "tests/",
+    "docs/",
     "README.md",
     "LICENSE",
     "pyproject.toml",
