@@ -1392,10 +1392,11 @@ def apply_xy_transform(
             ))
 
             # State tracks original (untransformed) position
+            # (state.abs_xy is guaranteed True here — G91 raises above)
             state.x = x_t
             state.y = y_t
             if "Z" in line.words:
-                state.z = line.words["Z"] if state.abs_xy else state.z + line.words["Z"]
+                state.z = line.words["Z"]
             if "E" in line.words:
                 state.e = (line.words["E"] if state.abs_e
                            else state.e + line.words["E"])
@@ -1623,6 +1624,16 @@ def compute_stats(
 
             for xi, yi in pts:
                 stats.bounds.expand(xi, yi)
+
+            if "Z" in words:
+                if state.abs_xy:
+                    z1 = words["Z"]
+                else:
+                    z1 = state.z + words["Z"]
+                stats.bounds.expand_z(z1)
+                if last_z is None or abs(z1 - last_z) > EPS:
+                    seen_z.append(z1)
+                    last_z = z1
 
             if "F" in words:
                 f = words["F"]
@@ -2077,7 +2088,7 @@ def _point_in_polygon(x: float, y: float, polygon: List[Tuple[float, float]]) ->
     for i in range(n):
         xi, yi = polygon[i]
         xj, yj = polygon[j]
-        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi + EPS) + xi):
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
             inside = not inside
         j = i
     return inside
@@ -2418,8 +2429,9 @@ def apply_xy_transform_by_layer(
             if skip_negative_y and y_orig < 0:
                 result.append(line)
                 advance_state(state, line)
+                # state.abs_xy is guaranteed True here — G91 raises above
                 if "Z" in line.words:
-                    current_z = line.words["Z"] if state.abs_xy else current_z + line.words["Z"]
+                    current_z = line.words["Z"]
                 continue
             x_new, y_new = transform_fn(x_orig, y_orig)
 

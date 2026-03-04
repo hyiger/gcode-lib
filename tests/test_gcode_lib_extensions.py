@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import struct
+import subprocess
 
 import pytest
 
@@ -937,6 +938,34 @@ class TestRecenterToBedEdgeCases:
 # ---------------------------------------------------------------------------
 # slice_batch — edge cases
 # ---------------------------------------------------------------------------
+
+class TestRunPrusaSlicerErrors:
+    def test_timeout_raises_runtime_error(self):
+        from unittest.mock import patch
+        with patch("gcode_lib.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["fake"], timeout=10)):
+            with pytest.raises(RuntimeError, match="timed out"):
+                gl.run_prusaslicer("/fake/slicer", ["--help"], timeout_s=10)
+
+    def test_os_error_raises_runtime_error(self):
+        from unittest.mock import patch
+        with patch("gcode_lib.subprocess.run", side_effect=OSError("No such file")):
+            with pytest.raises(RuntimeError, match="Cannot run"):
+                gl.run_prusaslicer("/fake/slicer", ["--help"])
+
+
+class TestProbePrusaSlicerCapabilitiesErrors:
+    def test_timeout_raises_runtime_error(self):
+        from unittest.mock import patch
+        with patch("gcode_lib.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["fake"], timeout=30)):
+            with pytest.raises(RuntimeError, match="timed out"):
+                gl.probe_prusaslicer_capabilities("/fake/slicer")
+
+    def test_os_error_raises_runtime_error(self):
+        from unittest.mock import patch
+        with patch("gcode_lib.subprocess.run", side_effect=OSError("Permission denied")):
+            with pytest.raises(RuntimeError, match="Cannot run"):
+                gl.probe_prusaslicer_capabilities("/fake/slicer")
+
 
 class TestSliceBatchEdgeCases:
     def test_empty_inputs_returns_empty_list(self):
