@@ -766,20 +766,31 @@ print(p["bed_x"], p["bed_y"], p["max_z"])   # 250.0  220.0  220.0
 
 ```python
 print(list(gl.FILAMENT_PRESETS.keys()))
-# ['PLA', 'PETG', 'ASA', 'TPU', 'ABS']
+# ['PLA', 'PETG', 'ASA', 'TPU', 'ABS', 'PA', 'PC', 'PCTG', 'PP', 'PPA', 'HIPS', 'PLA-CF', 'PETG-CF', 'PA-CF']
 
 f = gl.FILAMENT_PRESETS["PLA"]
 print(f["hotend"], f["bed"], f["fan"], f["retract"])
 # 215  60  100  0.8
 ```
 
-| Key | `hotend` °C | `bed` °C | `fan` % | `retract` mm |
-|---|---|---|---|---|
-| `PLA` | 215 | 60 | 100 | 0.8 |
-| `PETG` | 240 | 80 | 40 | 0.8 |
-| `ASA` | 255 | 90 | 20 | 1.0 |
-| `TPU` | 225 | 45 | 30 | 1.5 |
-| `ABS` | 245 | 100 | 30 | 1.0 |
+| Key | `hotend` °C | `bed` °C | `fan` % | `retract` mm | `speed` mm/s | `enclosure` |
+|---|---|---|---|---|---|---|
+| `PLA` | 215 | 60 | 100 | 0.8 | 60 | No |
+| `PETG` | 240 | 80 | 40 | 0.8 | 50 | No |
+| `ASA` | 260 | 100 | 20 | 0.8 | 45 | Yes |
+| `TPU` | 230 | 50 | 50 | 1.5 | 25 | No |
+| `ABS` | 255 | 100 | 20 | 0.8 | 45 | Yes |
+| `PA` | 260 | 80 | 30 | 1.0 | 40 | Yes |
+| `PC` | 275 | 110 | 20 | 0.8 | 40 | Yes |
+| `PCTG` | 250 | 80 | 50 | 0.8 | 50 | No |
+| `PP` | 240 | 85 | 30 | 1.2 | 35 | Yes |
+| `PPA` | 280 | 100 | 20 | 0.8 | 40 | Yes |
+| `HIPS` | 230 | 100 | 20 | 0.8 | 45 | Yes |
+| `PLA-CF` | 220 | 60 | 100 | 0.8 | 50 | No |
+| `PETG-CF` | 250 | 80 | 30 | 0.8 | 45 | No |
+| `PA-CF` | 270 | 80 | 20 | 1.0 | 40 | Yes |
+
+Each preset also includes `temp_min` and `temp_max` (°C) for safe temperature range validation.
 
 ### Using presets for bed operations
 
@@ -1158,7 +1169,7 @@ Thumbnail and metadata blocks are always read correctly regardless of compressio
 | Name | Type | Description |
 |---|---|---|
 | `PRINTER_PRESETS` | `Dict[str, Dict]` | Bed and Z dimensions for Prusa printers (`COREONE`, `COREONEL`, `MK4`, `MK3S`, `MINI`, `XL`) |
-| `FILAMENT_PRESETS` | `Dict[str, Dict]` | Hotend/bed temperatures and retraction for common materials (`PLA`, `PETG`, `ASA`, `TPU`, `ABS`) |
+| `FILAMENT_PRESETS` | `Dict[str, Dict]` | Hotend/bed temperatures, retraction, speed, and enclosure flag for common materials (`PLA`, `PETG`, `ASA`, `TPU`, `ABS`, `PA`, `PC`, `PCTG`, `PP`, `PPA`, `HIPS`, `PLA-CF`, `PETG-CF`, `PA-CF`) |
 
 ### Data classes
 
