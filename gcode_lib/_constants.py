@@ -4,7 +4,7 @@ import re
 import struct
 from typing import Dict, List, Tuple
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 # ---------------------------------------------------------------------------
 # Constants
