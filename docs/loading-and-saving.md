@@ -64,7 +64,7 @@ lines = gl.parse_lines("G28\nG90\nG1 X0 Y0\n")
 ```python
 # Split a line into code and comment portions
 code, comment = gl.split_comment("G1 X10 Y20 ; move to start")
-# code    → "G1 X10 Y20 "
+# code    → "G1 X10 Y20"
 # comment → "; move to start"
 
 # Parse axis words from a code string

@@ -316,6 +316,13 @@ def test_replace_ini_value_only_first_occurrence():
     assert result[1] == "temperature = 210"
 
 
+def test_replace_ini_value_preserves_line_ending():
+    lines = ["bed_temperature = 60\n"]
+    result, found = gl.replace_ini_value(lines, "bed_temperature", "80")
+    assert found is True
+    assert result == ["bed_temperature = 80\n"]
+
+
 # ===========================================================================
 # pa_command
 # ===========================================================================

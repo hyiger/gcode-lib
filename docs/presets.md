@@ -11,14 +11,14 @@ print(list(gl.PRINTER_PRESETS.keys()))
 # ['COREONE', 'COREONEL', 'MK4', 'MK3S', 'MINI', 'XL']
 
 p = gl.PRINTER_PRESETS["MK4"]
-print(p["bed_x"], p["bed_y"], p["max_z"])   # 250.0  220.0  220.0
+print(p["bed_x"], p["bed_y"], p["max_z"])   # 250.0  210.0  220.0
 ```
 
 | Key | `bed_x` mm | `bed_y` mm | `max_z` mm |
 |---|---|---|---|
 | `COREONE` | 250.0 | 220.0 | 250.0 |
 | `COREONEL` | 300.0 | 300.0 | 330.0 |
-| `MK4` | 250.0 | 220.0 | 220.0 |
+| `MK4` | 250.0 | 210.0 | 220.0 |
 | `MK3S` | 250.0 | 210.0 | 210.0 |
 | `MINI` | 180.0 | 180.0 | 180.0 |
 | `XL` | 360.0 | 360.0 | 360.0 |
@@ -110,26 +110,27 @@ print(result["bed_temp"])  # 90
 mesh bed leveling temperature (170 C).
 
 ```python
-print(gl.KNOWN_PRINTERS)  # ('COREONE', 'COREONEL', 'MK4', 'MK3S', 'MINI', 'XL')
+print(gl.KNOWN_PRINTERS)  # ('COREONE', 'COREONEL', 'MK4S', 'MINI', 'XL')
 print(gl.MBL_TEMP)         # 170
 ```
 
 ### resolve_printer
 
-`resolve_printer()` normalises a printer name (case-insensitive, strips whitespace) and validates
-it against `KNOWN_PRINTERS`.  Raises `ValueError` if the name is not recognised.
+`resolve_printer()` normalises a printer name (case-insensitive) and validates
+it against `KNOWN_PRINTERS` (with aliases such as `MK4 -> MK4S`).  Raises `ValueError` if the name
+is not recognised.
 
 ```python
-printer = gl.resolve_printer("mk4")   # "MK4"
+printer = gl.resolve_printer("mk4")   # "MK4S"
 gl.resolve_printer("unknown")          # raises ValueError
 ```
 
 ### compute_bed_center and compute_bed_shape
 
-`compute_bed_center()` returns the bed centre as a string (e.g. `"125,110"`).
+`compute_bed_center()` returns the bed centre as a string (e.g. `"125,105"`).
 `compute_bed_shape()` returns the bed shape as a PrusaSlicer `--bed-shape` argument string.
 
 ```python
-print(gl.compute_bed_center("MK4"))   # "125,110"
-print(gl.compute_bed_shape("MK4"))    # "0x0,250x0,250x220,0x220"
+print(gl.compute_bed_center("MK4"))   # "125,105"
+print(gl.compute_bed_shape("MK4"))    # "0x0,250x0,250x210,0x210"
 ```

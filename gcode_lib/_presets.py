@@ -222,6 +222,9 @@ def detect_printer_preset(lines: List[GCodeLine]) -> Optional[str]:
             name = m.group(1).upper()
             if name in PRINTER_PRESETS:
                 return name
+            alias = _PRESET_ALIASES.get(name)
+            if alias in PRINTER_PRESETS:
+                return alias
     return None
 
 

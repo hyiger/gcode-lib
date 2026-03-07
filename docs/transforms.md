@@ -195,9 +195,9 @@ gf.lines = lines
 gl.save(gf, "output.gcode")
 ```
 
-`to_absolute_xy` drops all `G91` commands, rewrites the affected `G0`/`G1` lines with their
-accumulated absolute XY positions, and prepends a single `G90` line when any relative moves
-were found.  Z, E, F, and comments are always preserved unchanged.
+`to_absolute_xy` drops all `G91` commands, rewrites the affected `G0`/`G1`/`G2`/`G3` lines with
+their accumulated absolute XY positions, and prepends a single `G90` line when any `G91` command
+was found.  Z, E, F, and comments are always preserved unchanged.
 
 ```python
 # Supply an explicit starting state if the file begins mid-print

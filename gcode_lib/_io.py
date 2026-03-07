@@ -134,12 +134,14 @@ def load(path: str) -> GCodeFile:
 def save(gf: GCodeFile, path: str) -> None:
     """Atomically write *gf* to *path*, preserving the original file format."""
     d = os.path.dirname(os.path.abspath(path)) or "."
-    text = to_text(gf)
     if gf.source_format == "bgcode" and gf._bgcode_file_hdr is not None:
+        # BGCode stores thumbnails in dedicated binary blocks; do not also inject
+        # text thumbnail comment blocks into the G-code payload.
+        gcode_text = "\n".join(line.raw for line in gf.lines) + "\n"
         data = _bgcode_reassemble(
             gf._bgcode_file_hdr,
             gf._bgcode_nongcode_blocks or [],
-            text,
+            gcode_text,
         )
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         try:
@@ -153,6 +155,7 @@ def save(gf: GCodeFile, path: str) -> None:
                 except OSError:
                     pass
     else:
+        text = to_text(gf)
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp", text=True)
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:

@@ -467,6 +467,16 @@ class TestRotateXY:
         assert arc.words["I"] == pytest.approx(0.0, abs=1e-3)
         assert arc.words["J"] == pytest.approx(-10.0, abs=1e-3)
 
+    def test_arc_rotation_absolute_ij_r_arc_does_not_inject_ij(self):
+        """R-format arcs in G90.1 mode must not be rewritten to include I/J."""
+        lines = gl.parse_lines("G90\nG90.1\nG2 X10 Y0 R5")
+        result = gl.rotate_xy(lines, 0.0, pivot_x=0.0, pivot_y=0.0, skip_negative_y=False)
+        arc = [ln for ln in result if ln.is_arc][0]
+        assert "I" not in arc.words
+        assert "J" not in arc.words
+        assert " I" not in arc.raw
+        assert " J" not in arc.raw
+
     def test_bed_validation_recenters(self):
         """Rotated print should be re-centred within the bed."""
         # Square at (0,0)-(10,10), rotate 0° with bed 0-100 x 0-100
@@ -479,6 +489,23 @@ class TestRotateXY:
         # Should be centred at (50, 50)
         assert bounds.center_x == pytest.approx(50.0, abs=1e-3)
         assert bounds.center_y == pytest.approx(50.0, abs=1e-3)
+
+    def test_bed_validation_respects_initial_state(self):
+        """Bed fit/recenter pass must use initial_state for partial-axis moves."""
+        lines = gl.parse_lines("G90\nG1 Y60\nG1 X120")
+        initial = gl.ModalState()
+        initial.x = 100.0
+        initial.y = 50.0
+        result = gl.rotate_xy(
+            lines, 0.0,
+            bed_min_x=0, bed_max_x=200, bed_min_y=0, bed_max_y=200,
+            initial_state=initial,
+            skip_negative_y=False,
+        )
+        g1s = [ln for ln in result if ln.command == "G1"]
+        # True pre-center bounds center is (110, 60), so recenter delta is (-10, +40).
+        assert g1s[0].words["Y"] == pytest.approx(100.0, abs=1e-3)
+        assert g1s[1].words["X"] == pytest.approx(110.0, abs=1e-3)
 
     def test_bed_validation_raises_if_too_large(self):
         """ValueError when rotated print exceeds bed area."""

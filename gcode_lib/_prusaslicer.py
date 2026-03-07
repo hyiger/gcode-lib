@@ -311,6 +311,8 @@ def slice_model(exe: str, req: SliceRequest) -> RunResult:
     args: List[str] = []
     if req.config_ini:
         args += ["--load", req.config_ini]
+    if req.printer_technology:
+        args += ["--printer-technology", req.printer_technology]
     args += ["--export-gcode", "--output", req.output_path]
     args += req.extra_args
     args.append(req.input_path)
@@ -583,7 +585,8 @@ def replace_ini_value(
         if not found:
             m = pattern.match(line)
             if m:
-                result.append(f"{m.group(1)}{new_value}")
+                line_ending = "\r\n" if line.endswith("\r\n") else ("\n" if line.endswith("\n") else "")
+                result.append(f"{m.group(1)}{new_value}{line_ending}")
                 found = True
                 continue
         result.append(line)

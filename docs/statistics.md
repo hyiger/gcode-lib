@@ -53,7 +53,7 @@ print(f"Extruded area: {extruding_bounds.width:.1f} x {extruding_bounds.height:.
 gf = gl.load("print.gcode")
 
 bounds = gl.compute_bounds(gf.lines)
-bed_cx, bed_cy = 125.0, 110.0   # MK4 bed centre
+bed_cx, bed_cy = 125.0, 105.0   # MK4 bed centre
 
 dx = bed_cx - bounds.center_x
 dy = bed_cy - bounds.center_y

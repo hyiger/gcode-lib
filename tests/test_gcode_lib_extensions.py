@@ -471,6 +471,10 @@ class TestDetectPrinterPreset:
         lines = gl.parse_lines('M862.3 P "MK4"\n')
         assert gl.detect_printer_preset(lines) == "MK4"
 
+    def test_detect_mk4s_alias_maps_to_mk4_preset(self):
+        lines = gl.parse_lines('M862.3 P "MK4S"\n')
+        assert gl.detect_printer_preset(lines) == "MK4"
+
     def test_detect_without_quotes(self):
         lines = gl.parse_lines('M862.3 P COREONE\n')
         assert gl.detect_printer_preset(lines) == "COREONE"
@@ -534,6 +538,11 @@ class TestDetectPrintVolume:
         vol = gl.detect_print_volume(lines)
         vol["bed_x"] = 9999.0
         assert gl.PRINTER_PRESETS["MK4"]["bed_x"] == 250.0
+
+    def test_mk4s_alias_uses_mk4_dimensions(self):
+        lines = gl.parse_lines('M862.3 P "MK4S"\n')
+        vol = gl.detect_print_volume(lines)
+        assert vol == {"bed_x": 250.0, "bed_y": 210.0, "max_z": 220.0}
 
 
 # ===========================================================================
@@ -714,6 +723,26 @@ class TestPrusaSlicerDataStructures:
         assert cap.raw_help_fff is None
 
 
+class TestSliceModelCommand:
+    def test_includes_printer_technology_flag(self):
+        from unittest.mock import patch
+
+        req = gl.SliceRequest(
+            input_path="model.stl",
+            output_path="out.gcode",
+            config_ini=None,
+            printer_technology="SLA",
+        )
+        fake = gl.RunResult(cmd=[], returncode=0, stdout="", stderr="")
+        with patch("gcode_lib._prusaslicer.run_prusaslicer", return_value=fake) as m:
+            gl.slice_model("/fake/slicer", req)
+
+        args = m.call_args[0][1]
+        assert "--printer-technology" in args
+        idx = args.index("--printer-technology")
+        assert args[idx + 1] == "SLA"
+
+
 class TestFindPrusaSlicerExecutable:
     def test_explicit_path_not_found_raises(self):
         with pytest.raises(FileNotFoundError, match="Explicit"):
@@ -782,10 +811,11 @@ class TestOOBEdgeCases:
         # (0, 110) is on the left edge of the rectangle
         lines = gl.parse_lines("G90\nG1 X0 Y110\n")
         hits = gl.find_oob_moves(lines, RECT_BED)
-        # May be 0 or 1 depending on ray-casting edge convention — just assert
-        # that if there is a hit, distance_outside is essentially zero
-        for h in hits:
-            assert h.distance_outside < 1e-6
+        assert hits == []
+
+    def test_points_on_right_and_top_edges_are_in_bounds(self):
+        lines = gl.parse_lines("G90\nG1 X250 Y110\nG1 X120 Y220\n")
+        assert gl.find_oob_moves(lines, RECT_BED) == []
 
 
 # ---------------------------------------------------------------------------
@@ -933,6 +963,12 @@ class TestRecenterToBedEdgeCases:
         assert b_after.center_x == pytest.approx(100.0, abs=0.5)
         assert b_after.center_y == pytest.approx(110.0, abs=0.5)
         assert b_after.width == pytest.approx(b_before.width, abs=0.01)
+
+    def test_fit_mode_linearizes_arcs(self):
+        """fit mode should output G1-only geometry (arcs consumed during scaling)."""
+        lines = gl.parse_lines("G90\nG1 X0 Y0\nG3 X10 Y0 I5 J0")
+        result = gl.recenter_to_bed(lines, 0, 40, 0, 40, mode="fit", skip_negative_y=False)
+        assert all(not ln.is_arc for ln in result)
 
 
 # ---------------------------------------------------------------------------

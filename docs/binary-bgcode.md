@@ -71,6 +71,7 @@ gcode_text = "G28\nG90\nG1 X50 Y50 Z0.2 F3000\n"
 bgcode_bytes = gl.write_bgcode(gcode_text)
 ```
 
-> **Note:** `write_bgcode` produces a valid BGCode v2 file with DEFLATE-compressed G-code.
+> **Note:** `write_bgcode` produces a valid BGCode v2 file with an uncompressed
+> (type 0) G-code block encoded as raw UTF-8.
 > Reading supports all BGCode compression types (None, DEFLATE, Heatshrink) and all encoding
 > types (raw UTF-8, MeatPack, MeatPack with comments).
