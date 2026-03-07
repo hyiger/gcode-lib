@@ -39,12 +39,11 @@ Repository = "https://github.com/hyiger/gcode-lib"
 "Bug Tracker" = "https://github.com/hyiger/gcode-lib/issues"
 
 [tool.hatch.build.targets.wheel]
-# gcode_lib is a single-file module (not a package directory)
-py-modules = ["gcode_lib"]
+packages = ["gcode_lib"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "gcode_lib.py",
+    "gcode_lib/",
     "tests/",
     "docs/",
     "README.md",
