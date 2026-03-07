@@ -479,14 +479,14 @@ def parse_prusaslicer_ini(path: str) -> Dict[str, Any]:
 
     # Collect all key-value pairs across all sections into a flat dict.
     # Start with DEFAULT, then let section-specific keys override.
-    # parser.items(section) includes DEFAULT-inherited keys, so we filter
-    # to only accept keys that genuinely differ from the DEFAULT value --
-    # otherwise a later section without a key would reset it to DEFAULT.
+    # parser.items(section) includes DEFAULT-inherited keys, so we only
+    # accept keys explicitly set in the section (present in _sections),
+    # not keys merely inherited from DEFAULT.
     defaults = parser.defaults()
     flat: Dict[str, str] = dict(defaults)
     for section in parser.sections():
         for key, value in parser.items(section):
-            if key not in defaults or value != defaults[key]:
+            if key not in defaults or key in parser._sections[section]:
                 flat[key] = value
 
     result: Dict[str, Any] = {}

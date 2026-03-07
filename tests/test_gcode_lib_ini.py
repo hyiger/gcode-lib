@@ -264,6 +264,21 @@ def test_parse_ini_section_override_survives_later_section(tmp_path):
     assert result["layer_height"] == pytest.approx(0.3)
 
 
+def test_parse_ini_later_section_explicit_default_value(tmp_path):
+    """A later section explicitly setting a key to DEFAULT value must override earlier sections."""
+    ini = tmp_path / "test.ini"
+    ini.write_text(
+        "[DEFAULT]\n"
+        "temperature = 200\n"
+        "[filament]\n"
+        "temperature = 220\n"
+        "[print]\n"
+        "temperature = 200\n"
+    )
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert result["nozzle_temp"] == 200
+
+
 # ===========================================================================
 # replace_ini_value
 # ===========================================================================
