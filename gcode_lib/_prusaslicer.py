@@ -469,7 +469,10 @@ def parse_prusaslicer_ini(path: str) -> Dict[str, Any]:
     dict
         Extracted settings.  Empty dict if the file cannot be read.
     """
-    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
 
     # PrusaSlicer config exports may lack section headers.
     # configparser requires at least one section, so prepend a default.

@@ -215,6 +215,16 @@ class TestOOBDetection:
         hits = gl.find_oob_moves([], self.BED)
         assert hits == []
 
+    def test_invalid_polygon_raises(self):
+        src = "G90\nG1 X10 Y10\n"
+        with pytest.raises(ValueError, match="at least 3 points"):
+            gl.find_oob_moves(_lines(src), [])
+
+    def test_max_oob_distance_invalid_polygon_raises(self):
+        src = "G90\nG1 X10 Y10\n"
+        with pytest.raises(ValueError, match="at least 3 points"):
+            gl.max_oob_distance(_lines(src), [])
+
 
 # ===========================================================================
 # §4.4 — recenter_to_bed

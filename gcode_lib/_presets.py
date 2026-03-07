@@ -1075,6 +1075,7 @@ def render_start_gcode(
     cool_fan: bool = True,
 ) -> str:
     """Render the start G-code template for *printer*."""
+    printer = resolve_printer(printer)
     template = _PRINTER_GCODE_TEMPLATES[printer].start
     m555 = compute_m555(bed_center, model_width, model_depth)
     mbl_temp = min(hotend_temp, MBL_TEMP)
@@ -1096,6 +1097,7 @@ def render_end_gcode(
     max_layer_z: float,
 ) -> str:
     """Render the end G-code template for *printer*."""
+    printer = resolve_printer(printer)
     template = _PRINTER_GCODE_TEMPLATES[printer].end
     preset = _lookup_printer_preset(printer)
     max_z = float(preset["max_z"]) if preset is not None else 250.0
