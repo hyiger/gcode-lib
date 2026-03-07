@@ -56,7 +56,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -3586,12 +3586,11 @@ def parse_prusaslicer_ini(path: str) -> Dict[str, Any]:
     parser.read_string(text)
 
     # Collect all key-value pairs across all sections into a flat dict.
-    # Later sections override earlier ones (unlikely in practice).
-    flat: Dict[str, str] = {}
+    # Start with DEFAULT, then let named sections override.
+    flat: Dict[str, str] = dict(parser.defaults())
     for section in parser.sections():
-        flat.update(dict(parser[section]))
-    # Also include DEFAULT section items.
-    flat.update(dict(parser.defaults()))
+        for key, value in parser.items(section):
+            flat[key] = value
 
     result: Dict[str, Any] = {}
 
@@ -3917,11 +3916,11 @@ def build_thumbnail_block(png_data: bytes, width: int, height: int) -> bytes:
     The returned bytes are suitable for inserting into
     ``GCodeFile._bgcode_nongcode_blocks``.
 
-    The 6-byte params field follows the libbgcode spec order:
-    ``format (u16) | width (u16) | height (u16)``.
+    The 6-byte params field is: ``width (u16) | height (u16) | format (u16)``,
+    matching the ``Thumbnail.params`` layout used throughout the library.
     """
     hdr = struct.pack("<HHI", _BLK_THUMBNAIL, _COMP_NONE, len(png_data))
-    params = struct.pack("<HHH", _IMG_PNG, width, height)
+    params = struct.pack("<HHH", width, height, _IMG_PNG)
     cksum = zlib.crc32(hdr) & 0xFFFFFFFF
     cksum = zlib.crc32(params, cksum) & 0xFFFFFFFF
     cksum = zlib.crc32(png_data, cksum) & 0xFFFFFFFF

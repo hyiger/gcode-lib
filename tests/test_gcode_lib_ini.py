@@ -235,6 +235,19 @@ def test_parse_ini_invalid_temp_omitted(tmp_path):
     assert "nozzle_temp" not in result
 
 
+def test_parse_ini_section_overrides_default(tmp_path):
+    """Named section values must override [DEFAULT] values."""
+    ini = tmp_path / "test.ini"
+    ini.write_text(
+        "[DEFAULT]\n"
+        "temperature = 200\n"
+        "[filament]\n"
+        "temperature = 220\n"
+    )
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert result["nozzle_temp"] == 220
+
+
 # ===========================================================================
 # replace_ini_value
 # ===========================================================================
