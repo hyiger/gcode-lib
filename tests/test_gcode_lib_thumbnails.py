@@ -378,6 +378,41 @@ class TestBuildThumbnailBlock:
         block = gl.build_thumbnail_block(PNG_DATA, 16, 16)
         assert PNG_DATA in block
 
+    def test_params_order_width_height_format(self):
+        """build_thumbnail_block must write params as (width, height, format)
+        so that Thumbnail.width/height/format_code read them back correctly."""
+        block = gl.build_thumbnail_block(PNG_DATA, 220, 124)
+        # params start at offset 8 (after 8-byte header)
+        w, h, fmt = struct.unpack_from("<HHH", block, 8)
+        assert w == 220
+        assert h == 124
+        assert fmt == gl._IMG_PNG
+
+    def test_round_trip_via_read_bgcode(self):
+        """Thumbnail built by build_thumbnail_block should round-trip through
+        read_bgcode with correct width, height, and format_code."""
+        thumb_block = gl.build_thumbnail_block(PNG_DATA, 64, 48)
+
+        # Build a minimal bgcode with this thumbnail + a gcode block
+        MAGIC = b"GCDE"
+        file_hdr = MAGIC + struct.pack("<IH", 1, 1)
+        payload = GCODE_BODY.encode("utf-8")
+        g_hdr = struct.pack("<HHI", 1, 0, len(payload))
+        g_params = struct.pack("<H", 0)
+        g_cksum = zlib.crc32(g_hdr) & 0xFFFFFFFF
+        g_cksum = zlib.crc32(g_params, g_cksum) & 0xFFFFFFFF
+        g_cksum = zlib.crc32(payload, g_cksum) & 0xFFFFFFFF
+        gcode_block = g_hdr + g_params + payload + struct.pack("<I", g_cksum)
+
+        raw = file_hdr + thumb_block + gcode_block
+        gf = gl.read_bgcode(raw)
+        assert len(gf.thumbnails) == 1
+        t = gf.thumbnails[0]
+        assert t.width == 64
+        assert t.height == 48
+        assert t.format_code == gl._IMG_PNG
+        assert t.data == PNG_DATA
+
 
 class TestFindThumbnailInsertPos:
     def test_empty_list(self):
