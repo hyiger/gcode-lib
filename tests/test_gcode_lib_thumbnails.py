@@ -301,3 +301,253 @@ class TestInterchangeability:
         gf_bin = gl.load(str(p))
         for line in gf_bin.lines:
             assert "thumbnail" not in line.raw.lower()
+
+
+# ---------------------------------------------------------------------------
+# §13 — STL thumbnail rendering & injection
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock, patch
+import warnings as _warnings_mod
+
+
+class TestThumbnailSpec:
+    def test_dataclass_fields(self):
+        spec = gl.ThumbnailSpec(width=16, height=16)
+        assert spec.width == 16
+        assert spec.height == 16
+
+
+class TestParseThumbnailSpecs:
+    def test_two_specs(self):
+        result = gl.parse_thumbnail_specs("16x16/PNG,220x124/PNG")
+        assert len(result) == 2
+        assert result[0].width == 16
+        assert result[0].height == 16
+        assert result[1].width == 220
+        assert result[1].height == 124
+
+    def test_empty_string(self):
+        assert gl.parse_thumbnail_specs("") == []
+
+    def test_whitespace_only(self):
+        assert gl.parse_thumbnail_specs("  ") == []
+
+    def test_no_format_suffix(self):
+        result = gl.parse_thumbnail_specs("16x16")
+        assert len(result) == 1
+        assert result[0].width == 16
+        assert result[0].height == 16
+
+    def test_invalid_spec_warns_and_returns_empty(self):
+        with _warnings_mod.catch_warnings(record=True) as w:
+            _warnings_mod.simplefilter("always")
+            result = gl.parse_thumbnail_specs("abc")
+            assert result == []
+            assert len(w) == 1
+            assert "invalid thumbnail spec" in str(w[0].message).lower()
+
+
+class TestFallbackPng:
+    def test_returns_png_magic(self):
+        data = gl._fallback_png(16, 16)
+        assert data[:4] == b"\x89PNG"
+
+    def test_returns_bytes(self):
+        data = gl._fallback_png(16, 16)
+        assert isinstance(data, bytes)
+
+    def test_zero_dimensions_clamped(self):
+        # width=0, height=0 → clamped to 1x1
+        data = gl._fallback_png(0, 0)
+        assert data[:4] == b"\x89PNG"
+        assert len(data) > 8
+
+
+class TestBuildThumbnailBlock:
+    def test_returns_bytes(self):
+        block = gl.build_thumbnail_block(PNG_DATA, 16, 16)
+        assert isinstance(block, bytes)
+
+    def test_first_two_bytes_are_block_type_5(self):
+        block = gl.build_thumbnail_block(PNG_DATA, 16, 16)
+        btype = struct.unpack_from("<H", block, 0)[0]
+        assert btype == 5
+
+    def test_contains_png_data(self):
+        block = gl.build_thumbnail_block(PNG_DATA, 16, 16)
+        assert PNG_DATA in block
+
+
+class TestFindThumbnailInsertPos:
+    def test_empty_list(self):
+        assert gl._find_thumbnail_insert_pos([]) == 0
+
+    def test_after_file_metadata_block(self):
+        # Block type 0 = FILE_METADATA
+        blk0 = struct.pack("<HHI", 0, 0, 0) + struct.pack("<I", 0)
+        assert gl._find_thumbnail_insert_pos([blk0]) == 1
+
+    def test_after_printer_metadata_block(self):
+        # Block type 3 = PRINTER_METADATA
+        blk3 = struct.pack("<HHI", 3, 0, 0) + struct.pack("<I", 0)
+        assert gl._find_thumbnail_insert_pos([blk3]) == 1
+
+    def test_before_other_block_types(self):
+        # Block type 1 = GCODE, 2 = SLICER_METADATA
+        blk1 = struct.pack("<HHI", 1, 0, 0) + struct.pack("<I", 0)
+        blk2 = struct.pack("<HHI", 2, 0, 0) + struct.pack("<I", 0)
+        assert gl._find_thumbnail_insert_pos([blk1, blk2]) == 0
+
+    def test_mixed_blocks(self):
+        # FILE_METADATA at index 0, GCODE at index 1
+        blk0 = struct.pack("<HHI", 0, 0, 0) + struct.pack("<I", 0)
+        blk1 = struct.pack("<HHI", 1, 0, 0) + struct.pack("<I", 0)
+        assert gl._find_thumbnail_insert_pos([blk0, blk1]) == 1
+
+
+class TestFindSlicerMetaIndex:
+    def test_empty_list(self):
+        assert gl._find_slicer_meta_index([]) is None
+
+    def test_finds_slicer_metadata(self):
+        # Block type 2 = SLICER_METADATA
+        blk = struct.pack("<HHI", 2, 0, 0) + struct.pack("<I", 0)
+        assert gl._find_slicer_meta_index([blk]) == 0
+
+    def test_no_slicer_metadata(self):
+        blk = struct.pack("<HHI", 1, 0, 0) + struct.pack("<I", 0)
+        assert gl._find_slicer_meta_index([blk]) is None
+
+    def test_multiple_blocks_returns_first(self):
+        blk0 = struct.pack("<HHI", 0, 0, 0) + struct.pack("<I", 0)
+        blk2 = struct.pack("<HHI", 2, 0, 0) + struct.pack("<I", 0)
+        assert gl._find_slicer_meta_index([blk0, blk2]) == 1
+
+
+class TestInjectThumbnails:
+    def test_does_nothing_for_ascii_gcode(self):
+        gf = gl.from_text(GCODE_BODY)
+        assert gf.source_format == "text"
+        # Should not raise, just return silently
+        gl.inject_thumbnails(gf, "/fake/path.stl", "16x16/PNG")
+        assert gf.thumbnails == []
+
+    def test_does_nothing_if_thumbnails_already_present(self):
+        # Create a text gcode with an existing thumbnail
+        text = _thumb_block("thumbnail", 16, 16, PNG_DATA) + GCODE_BODY
+        gf = gl.from_text(text)
+        assert len(gf.thumbnails) == 1
+        # Force source_format to bgcode to test the short-circuit
+        gf.source_format = "bgcode"
+        original_count = len(gf.thumbnails)
+        gl.inject_thumbnails(gf, "/fake/path.stl", "16x16/PNG")
+        assert len(gf.thumbnails) == original_count
+
+    @patch("gcode_lib.render_stl_to_png")
+    def test_injects_thumbnail_for_bgcode(self, mock_render):
+        mock_render.return_value = PNG_DATA
+        # Build a minimal bgcode GCodeFile
+        gf = gl.GCodeFile(
+            lines=[],
+            thumbnails=[],
+            source_format="bgcode",
+            _bgcode_nongcode_blocks=[],
+        )
+        gl.inject_thumbnails(gf, "/fake/model.stl", "16x16/PNG")
+        assert len(gf.thumbnails) == 1
+        assert gf.thumbnails[0].width == 16
+        assert gf.thumbnails[0].height == 16
+        assert gf.thumbnails[0].data == PNG_DATA
+        mock_render.assert_called_once_with("/fake/model.stl", 16, 16)
+
+
+class TestPatchSlicerMetadata:
+    def test_does_nothing_for_ascii_gcode(self):
+        gf = gl.from_text(GCODE_BODY)
+        # Should not raise
+        gl.patch_slicer_metadata(gf, "COREONE", 0.4)
+
+    def test_returns_silently_for_unknown_combo(self):
+        gf = gl.GCodeFile(
+            lines=[],
+            thumbnails=[],
+            source_format="bgcode",
+            _bgcode_nongcode_blocks=[],
+        )
+        # "UNKNOWN" printer is not in _PRINTER_SETTINGS_IDS
+        gl.patch_slicer_metadata(gf, "UNKNOWN", 0.4)
+
+
+class TestNeedsSubprocessRender:
+    @patch("gcode_lib.platform")
+    def test_darwin_returns_true(self, mock_platform):
+        mock_platform.system.return_value = "Darwin"
+        assert gl._needs_subprocess_render() is True
+
+    @patch("gcode_lib.platform")
+    def test_linux_returns_false(self, mock_platform):
+        mock_platform.system.return_value = "Linux"
+        assert gl._needs_subprocess_render() is False
+
+
+class TestRebuildSlicerMetaBlock:
+    def _build_slicer_meta_block(self, text: str, comp: int = 0) -> bytes:
+        """Build a minimal SLICER_METADATA block for testing."""
+        payload = text.encode("utf-8")
+        params = struct.pack("<H", 0)  # 2-byte encoding param
+
+        if comp == 0:
+            # Uncompressed
+            hdr = struct.pack("<HHI", 2, 0, len(payload))
+            block_body = hdr + params + payload
+        elif comp == 1:
+            # Deflate compressed
+            compressed = zlib.compress(payload)
+            hdr = struct.pack("<HHI", 2, 1, len(payload))
+            cs_bytes = struct.pack("<I", len(compressed))
+            block_body = hdr + cs_bytes + params + compressed
+        else:
+            raise ValueError(f"Unsupported comp: {comp}")
+
+        crc = struct.pack("<I", zlib.crc32(block_body) & 0xFFFFFFFF)
+        return block_body + crc
+
+    def test_uncompressed_update(self):
+        raw = self._build_slicer_meta_block(
+            "printer_settings_id=\nother_key=value\n",
+            comp=0,
+        )
+        updated = gl._rebuild_slicer_meta_block(
+            raw, {"printer_settings_id": "Prusa CORE One HF0.4 nozzle"},
+        )
+        # Decode the updated block to verify the key was changed
+        btype, comp, usize = struct.unpack_from("<HHI", updated, 0)
+        assert btype == 2
+        assert comp == 0
+        params = updated[8:10]
+        payload = updated[10:10 + usize]
+        text = payload.decode("utf-8")
+        assert "printer_settings_id=Prusa CORE One HF0.4 nozzle" in text
+        assert "other_key=value" in text
+
+    def test_deflate_round_trip(self):
+        raw = self._build_slicer_meta_block(
+            "printer_settings_id=\nsome_key=foo\n",
+            comp=1,
+        )
+        updated = gl._rebuild_slicer_meta_block(
+            raw, {"printer_settings_id": "Prusa CORE One HF0.6 nozzle"},
+        )
+        # Verify block is deflate compressed
+        btype, comp, usize = struct.unpack_from("<HHI", updated, 0)
+        assert btype == 2
+        assert comp == 1
+        # Decompress and verify content
+        cs = struct.unpack_from("<I", updated, 8)[0]
+        params = updated[12:14]
+        compressed = updated[14:14 + cs]
+        payload = zlib.decompress(compressed)
+        text = payload.decode("utf-8")
+        assert "printer_settings_id=Prusa CORE One HF0.6 nozzle" in text
+        assert "some_key=foo" in text

@@ -86,3 +86,50 @@ vol = gl.detect_print_volume(gf.lines)
 if vol:
     print(vol)   # {"bed_x": 250.0, "bed_y": 220.0, "max_z": 250.0}
 ```
+
+## Resolving filament presets
+
+`resolve_filament_preset()` looks up a filament type (case-insensitive) and returns a dict with
+resolved `nozzle_temp`, `bed_temp`, and `fan_speed`.  Explicit keyword arguments override preset
+defaults.  Unknown filament types fall back to safe defaults (210 / 60 / 100).
+
+```python
+result = gl.resolve_filament_preset("PETG")
+print(result)  # {"nozzle_temp": 240, "bed_temp": 80, "fan_speed": 40}
+
+# Override bed temp from the preset
+result = gl.resolve_filament_preset("PETG", bed_temp=90)
+print(result["bed_temp"])  # 90
+```
+
+## Printer G-code helpers
+
+### KNOWN_PRINTERS and MBL_TEMP
+
+`KNOWN_PRINTERS` is a tuple of all supported printer name strings.  `MBL_TEMP` is the default
+mesh bed leveling temperature (170 C).
+
+```python
+print(gl.KNOWN_PRINTERS)  # ('COREONE', 'COREONEL', 'MK4', 'MK3S', 'MINI', 'XL')
+print(gl.MBL_TEMP)         # 170
+```
+
+### resolve_printer
+
+`resolve_printer()` normalises a printer name (case-insensitive, strips whitespace) and validates
+it against `KNOWN_PRINTERS`.  Raises `ValueError` if the name is not recognised.
+
+```python
+printer = gl.resolve_printer("mk4")   # "MK4"
+gl.resolve_printer("unknown")          # raises ValueError
+```
+
+### compute_bed_center and compute_bed_shape
+
+`compute_bed_center()` returns the bed centre as a string (e.g. `"125,110"`).
+`compute_bed_shape()` returns the bed shape as a PrusaSlicer `--bed-shape` argument string.
+
+```python
+print(gl.compute_bed_center("MK4"))   # "125,110"
+print(gl.compute_bed_shape("MK4"))    # "0x0,250x0,250x220,0x220"
+```

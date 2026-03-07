@@ -10,7 +10,9 @@ Single-file, stdlib-only Python library for parsing, analysing, and transforming
 - **Python 3.10+** — uses `from __future__ import annotations`.
 - **No third-party runtime deps** — stdlib only (`re`, `math`, `struct`, `zlib`, `base64`,
   `tempfile`, `os`, `sys`, `dataclasses`, `subprocess`, `shutil`, `concurrent.futures`,
-  `pathlib`, `typing`, `json`, `uuid`, `urllib.request`, `urllib.error`).
+  `pathlib`, `typing`, `json`, `uuid`, `urllib.request`, `urllib.error`, `configparser`,
+  `multiprocessing`, `platform`, `secrets`, `warnings`).  VTK is an optional dependency
+  for thumbnail rendering (`render_stl_to_png`); functions degrade gracefully if absent.
 - **G91 support**: `apply_xy_transform`, `apply_skew`, and `translate_xy` raise `ValueError`
   for relative moves. Use `to_absolute_xy()` to normalise first.  `translate_xy_allow_arcs`
   also requires G90.
@@ -29,6 +31,11 @@ tests/
   test_gcode_lib_integration.py
   test_gcode_lib_extensions.py
   test_gcode_lib_prusalink.py
+  test_gcode_lib_ini.py
+  test_gcode_lib_thumbnails_render.py
+  test_gcode_lib_printer_gcode.py
+  test_gcode_lib_slicer_helpers.py
+  test_gcode_lib_filename_utils.py
 ```
 
 ## Public API surface
@@ -71,6 +78,7 @@ tests/
 - `iter_arcs(lines)` — G2/G3 only
 - `iter_extruding(lines)` — extruding moves only
 - `iter_layers(lines)` → yields `(z_height, layer_lines)` — group lines by Z level
+- `is_extrusion_move(line)` — `True` if G1 with E + X/Y
 
 ### Transforms
 
@@ -107,6 +115,43 @@ being modified.  Pass `skip_negative_y=False` to transform all moves.
 
 ### Thumbnail helpers
 - `encode_thumbnail_comment_block(width, height, png_bytes)` → `str` — PrusaSlicer-compatible block
+
+### PrusaSlicer INI parsing
+- `parse_prusaslicer_ini(path)` → `Dict` — extract settings from .ini file
+
+### PrusaSlicer INI editing
+- `replace_ini_value(lines, key, new_value)` → `(List[str], bool)` — regex-based INI editing
+- `pa_command(pa_value, printer)` → `str` — M572 S (default) or M900 K (MINI)
+- `inject_pa_into_start_gcode(lines, pa_value, printer)` → `List[str]` — inject PA into INI value
+
+### Thumbnail rendering
+- `ThumbnailSpec` — dataclass for thumbnail dimensions
+- `parse_thumbnail_specs(spec)` → `List[ThumbnailSpec]` — parse PrusaSlicer spec string
+- `render_stl_to_png(stl_path, width, height)` → `bytes` — VTK off-screen render (optional dep)
+- `build_thumbnail_block(png_data, width, height)` → `bytes` — bgcode thumbnail block
+- `inject_thumbnails(gf, stl_path, spec_string)` — inject rendered thumbnails into GCodeFile
+- `patch_slicer_metadata(gf, printer_model, nozzle_diameter)` — patch printer_settings_id
+
+### Printer G-code templates
+- `KNOWN_PRINTERS` — tuple of supported printer names
+- `PrinterGCode` — dataclass for start/end templates
+- `MBL_TEMP` — default mesh bed leveling temp (170)
+- `resolve_printer(name)` → `str` — normalise/validate printer name (raises ValueError)
+- `compute_bed_center(printer)` → `str` — bed centre from PRINTER_PRESETS
+- `compute_bed_shape(printer)` → `str` — bed shape from PRINTER_PRESETS
+- `compute_m555(bed_center, model_width, model_depth)` → `Dict` — M555 params
+- `render_start_gcode(printer, ...)` → `str` — render start G-code template
+- `render_end_gcode(printer, ...)` → `str` — render end G-code template
+
+### Slicer dimension helpers
+- `derive_slicer_dimensions(nozzle_size)` → `(float, float)` — (layer_height, extrusion_width)
+- `flow_to_feedrate(flow_mm3s, layer_height, extrusion_width)` → `float` — mm/min
+- `resolve_filament_preset(filament_type, *, nozzle_temp, bed_temp, fan_speed)` → `Dict` — resolved temps
+
+### Filename utilities
+- `gcode_ext(binary=True)` → `str` — ".bgcode" or ".gcode"
+- `unique_suffix()` → `str` — 5-char hex
+- `safe_filename_part(value)` → `str` — sanitise for filename
 
 ### Presets
 - `PRINTER_PRESETS` — dict of `{name: {bed_x, bed_y, max_z}}` (COREONE, COREONEL, MK4, MK3S, MINI, XL)
