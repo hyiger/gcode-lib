@@ -296,3 +296,161 @@ fmt_axis(axis: str, v: float, xy_decimals=3, other_decimals=5) -> str
 replace_or_append(code: str, axis: str, val: float,
                   xy_decimals=3, other_decimals=5) -> str
 ```
+
+### §11 INI Parsing
+
+```
+parse_prusaslicer_ini(path: str) -> Dict[str, str]
+```
+
+Parse a PrusaSlicer `.ini` config file and return all key-value pairs as a dict.
+
+### §12 INI Editing
+
+```
+replace_ini_value(lines: List[str], key: str,
+                  new_value: str) -> Tuple[List[str], bool]
+```
+
+Replace the value of `key` in INI `lines` using regex matching.  Returns the updated lines and a `bool` indicating whether the key was found.
+
+```
+pa_command(pa_value: float, printer: str) -> str
+```
+
+Return the appropriate pressure advance G-code command: `M572 S<val>` (default) or `M900 K<val>` (MINI).
+
+```
+inject_pa_into_start_gcode(lines: List[str], pa_value: float,
+                           printer: str) -> List[str]
+```
+
+Inject a pressure advance command into the start G-code lines of an INI value.
+
+### §13 Thumbnail Rendering
+
+```
+ThumbnailSpec  # dataclass: width, height
+```
+
+Dataclass holding thumbnail pixel dimensions.
+
+```
+parse_thumbnail_specs(spec: str) -> List[ThumbnailSpec]
+```
+
+Parse a PrusaSlicer thumbnail spec string (e.g. `"16x16,220x124"`) into a list of `ThumbnailSpec`.
+
+```
+render_stl_to_png(stl_path: str, width: int, height: int) -> bytes
+```
+
+Render an STL file to a PNG image using VTK off-screen rendering.  Requires VTK as an optional dependency.
+
+```
+build_thumbnail_block(png_data: bytes, width: int, height: int) -> bytes
+```
+
+Build a bgcode-format thumbnail block from raw PNG data.
+
+```
+inject_thumbnails(gf: GCodeFile, stl_path: str,
+                  spec_string: str) -> None
+```
+
+Render thumbnails from an STL and inject them into a `GCodeFile`.
+
+```
+patch_slicer_metadata(gf: GCodeFile, printer_model: str,
+                      nozzle_diameter: float) -> None
+```
+
+Patch the `printer_settings_id` metadata in a `GCodeFile` to match the given printer model and nozzle diameter.
+
+### §14 Printer G-code Templates
+
+```
+KNOWN_PRINTERS  # tuple of supported printer name strings
+MBL_TEMP = 170  # default mesh bed leveling temperature (°C)
+```
+
+```
+PrinterGCode  # dataclass: start_template, end_template
+```
+
+Dataclass holding start and end G-code Jinja-style templates for a printer.
+
+```
+resolve_printer(name: str) -> str
+```
+
+Normalise and validate a printer name against `KNOWN_PRINTERS`.  Raises `ValueError` if unknown.
+
+```
+compute_bed_center(printer: str) -> str
+```
+
+Return the bed centre coordinates as a string (e.g. `"125,110"`) from `PRINTER_PRESETS`.
+
+```
+compute_bed_shape(printer: str) -> str
+```
+
+Return the bed shape as a PrusaSlicer `--bed-shape` string from `PRINTER_PRESETS`.
+
+```
+compute_m555(bed_center: str, model_width: float,
+             model_depth: float) -> Dict[str, float]
+```
+
+Compute M555 positioning parameters from bed centre and model dimensions.
+
+```
+render_start_gcode(printer: str, ...) -> str
+render_end_gcode(printer: str, ...) -> str
+```
+
+Render start/end G-code from the printer's template with provided variables.
+
+### §15 Slicer Dimension Helpers
+
+```
+derive_slicer_dimensions(nozzle_size: float) -> Tuple[float, float]
+```
+
+Return `(layer_height, extrusion_width)` derived from nozzle size using PrusaSlicer formulas: `layer_height = nozzle_size * 0.5`, `extrusion_width = nozzle_size * 1.125`.
+
+```
+flow_to_feedrate(flow_mm3s: float, layer_height: float,
+                 extrusion_width: float) -> float
+```
+
+Convert a volumetric flow rate (mm^3/s) to a linear feedrate (mm/min).
+
+```
+resolve_filament_preset(filament_type: str, *,
+                        nozzle_temp=None, bed_temp=None,
+                        fan_speed=None) -> Dict
+```
+
+Look up a filament preset by type (case-insensitive) and return resolved temperatures.  Explicit keyword arguments override preset defaults.
+
+### §16 Filename Utilities
+
+```
+gcode_ext(binary: bool = True) -> str
+```
+
+Return `".bgcode"` if binary, `".gcode"` otherwise.
+
+```
+unique_suffix() -> str
+```
+
+Return a 5-character hex string for unique filename suffixes.
+
+```
+safe_filename_part(value: str) -> str
+```
+
+Sanitise a string for use in a filename (remove/replace unsafe characters).

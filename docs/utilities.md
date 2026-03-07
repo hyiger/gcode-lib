@@ -90,3 +90,105 @@ gl.save(gf, "print_with_thumb.gcode")
 
 The format produced is identical to PrusaSlicer's output and is automatically read back into
 `gf.thumbnails` on the next `load()`.
+
+---
+
+## INI editing helpers
+
+### replace_ini_value
+
+Replace a key's value in a list of INI-format lines.  Returns the updated lines and a boolean
+indicating whether the key was found and replaced.
+
+```python
+lines = ["first_layer_temperature = 215\n", "bed_temperature = 60\n"]
+new_lines, found = gl.replace_ini_value(lines, "bed_temperature", "80")
+# found == True, new_lines[1] == "bed_temperature = 80\n"
+```
+
+### pa_command
+
+Return the printer-appropriate pressure advance G-code command.  Uses `M572 S<val>` for most
+printers and `M900 K<val>` for MINI (Linear Advance).
+
+```python
+gl.pa_command(0.04, "MK4")   # "M572 S0.04"
+gl.pa_command(0.04, "MINI")  # "M900 K0.04"
+```
+
+### inject_pa_into_start_gcode
+
+Inject a pressure advance command into start G-code lines (as stored in an INI value).
+
+```python
+start_lines = ["G28\n", "G1 Z5\n"]
+updated = gl.inject_pa_into_start_gcode(start_lines, 0.04, "MK4")
+# Appends "M572 S0.04" to the start G-code
+```
+
+---
+
+## Slicer dimension helpers
+
+### derive_slicer_dimensions
+
+Derive layer height and extrusion width from nozzle size using PrusaSlicer formulas.
+
+```python
+layer_h, ext_w = gl.derive_slicer_dimensions(0.4)
+# layer_h == 0.2, ext_w == 0.45
+```
+
+### flow_to_feedrate
+
+Convert a volumetric flow rate (mm^3/s) to a linear feedrate (mm/min).
+
+```python
+feedrate = gl.flow_to_feedrate(10.0, 0.2, 0.45)
+# feedrate in mm/min
+```
+
+---
+
+## Filename utilities
+
+### gcode_ext
+
+Return the file extension for G-code output: `".bgcode"` for binary, `".gcode"` for text.
+
+```python
+gl.gcode_ext(binary=True)   # ".bgcode"
+gl.gcode_ext(binary=False)  # ".gcode"
+```
+
+### unique_suffix
+
+Generate a 5-character hex string for creating unique filenames.
+
+```python
+suffix = gl.unique_suffix()  # e.g. "a3f1b"
+```
+
+### safe_filename_part
+
+Sanitise a string for safe use in a filename by removing or replacing unsafe characters.
+
+```python
+gl.safe_filename_part("PLA @ 215°C")  # "PLA_215C" (example)
+```
+
+---
+
+## State inspection
+
+### is_extrusion_move
+
+Return `True` if a `GCodeLine` is a G1 move that includes an E parameter along with X and/or Y.
+
+```python
+line = gl.parse_line("G1 X10 Y20 E0.5 F1200")
+gl.is_extrusion_move(line)  # True
+
+line = gl.parse_line("G1 X10 Y20 F1200")
+gl.is_extrusion_move(line)  # False (no E)
+```
