@@ -50,3 +50,6 @@ include = [
     "LICENSE",
     "pyproject.toml",
 ]
+exclude = [
+    ".claude/",
+]
