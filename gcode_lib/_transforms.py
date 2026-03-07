@@ -782,6 +782,9 @@ def find_oob_moves(
     initial_state: Optional[ModalState] = None,
 ) -> List[OOBHit]:
     """Return all G0/G1 move endpoints that fall outside *bed_polygon*."""
+    if len(bed_polygon) < 3:
+        raise ValueError("bed_polygon must contain at least 3 points")
+
     hits: List[OOBHit] = []
     state = initial_state.copy() if initial_state else ModalState()
 

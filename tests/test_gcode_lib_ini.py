@@ -220,6 +220,11 @@ def test_parse_ini_filament_type(tmp_path):
     assert result["filament_type"] == "PETG"
 
 
+def test_parse_ini_missing_file_returns_empty_dict(tmp_path):
+    missing = tmp_path / "missing.ini"
+    assert gl.parse_prusaslicer_ini(str(missing)) == {}
+
+
 def test_parse_ini_missing_keys_empty_dict(tmp_path):
     ini = tmp_path / "test.ini"
     ini.write_text("# nothing relevant here\n")

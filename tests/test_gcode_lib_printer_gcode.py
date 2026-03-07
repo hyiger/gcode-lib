@@ -189,6 +189,27 @@ class TestRenderStartGCode:
         out = self._render()
         assert "M109 S215" in out
 
+    def test_alias_mk4_matches_mk4s_output(self):
+        out_alias = gl.render_start_gcode(
+            "MK4",
+            nozzle_dia=0.4,
+            bed_temp=60,
+            hotend_temp=215,
+            bed_center="125,110",
+            model_width=40,
+            model_depth=40,
+        )
+        out_canonical = gl.render_start_gcode(
+            "MK4S",
+            nozzle_dia=0.4,
+            bed_temp=60,
+            hotend_temp=215,
+            bed_center="125,110",
+            model_width=40,
+            model_depth=40,
+        )
+        assert out_alias == out_canonical
+
 
 # ---------------------------------------------------------------------------
 # render_end_gcode
@@ -213,3 +234,8 @@ class TestRenderEndGCode:
         # max_layer_z=100, park_z=110, well below max_z=250
         out = gl.render_end_gcode("COREONE", max_layer_z=100.0)
         assert "Z110.0" in out
+
+    def test_alias_mk4_matches_mk4s_output(self):
+        out_alias = gl.render_end_gcode("MK4", max_layer_z=50.0)
+        out_canonical = gl.render_end_gcode("MK4S", max_layer_z=50.0)
+        assert out_alias == out_canonical

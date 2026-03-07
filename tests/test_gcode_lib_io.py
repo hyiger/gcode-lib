@@ -94,6 +94,11 @@ def test_to_text_preserves_comments():
     assert gl.to_text(gl.from_text(text)) == text
 
 
+def test_to_text_empty_stays_empty():
+    gf = gl.from_text("")
+    assert gl.to_text(gf) == ""
+
+
 # ---------------------------------------------------------------------------
 # load — text files
 # ---------------------------------------------------------------------------
