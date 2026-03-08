@@ -36,6 +36,7 @@ def _parse_text_thumbnails(
     thumbnails: List[Thumbnail] = []
     i = 0
     while i < len(lines):
+        start = i
         m = _THUMB_BEGIN_RE.match(lines[i].raw)
         if not m:
             result.append(lines[i])
@@ -47,22 +48,32 @@ def _parse_text_thumbnails(
 
         b64_parts: List[str] = []
         i += 1
+        found_end = False
         while i < len(lines):
             raw = lines[i].raw
             if _THUMB_END_RE.match(raw):
+                found_end = True
                 i += 1
                 break
             if raw.startswith("; "):
-                b64_parts.append(raw[2:])
+                b64_parts.append(raw[2:].strip())
             elif raw.startswith(";"):
-                b64_parts.append(raw[1:])
+                b64_parts.append(raw[1:].strip())
             else:
-                b64_parts.append(raw)
+                b64_parts.append(raw.strip())
             i += 1
 
+        if not found_end:
+            # Malformed block: keep the begin line and resume normal parsing.
+            result.append(lines[start])
+            i = start + 1
+            continue
+
         try:
-            img_data = base64.b64decode("".join(b64_parts))
+            img_data = base64.b64decode("".join(b64_parts), validate=True)
         except Exception:
+            # Malformed block: preserve original lines, do not drop G-code.
+            result.extend(lines[start:i])
             continue
 
         fmt_code = _THUMB_KEYWORD_FMT.get(keyword.lower(), -1)
@@ -107,10 +118,15 @@ def from_text(text: str) -> GCodeFile:
 
 def to_text(gf: GCodeFile) -> str:
     """Render a :class:`GCodeFile` back to a G-code text string."""
-    gcode = "\n".join(line.raw for line in gf.lines) + "\n"
+    gcode = "\n".join(line.raw for line in gf.lines)
+    if gcode:
+        gcode += "\n"
     if not gf.thumbnails:
         return gcode
-    return _render_text_thumbnails(gf.thumbnails) + "\n" + gcode
+    thumbs = _render_text_thumbnails(gf.thumbnails)
+    if gcode:
+        return thumbs + "\n" + gcode
+    return thumbs
 
 
 def load(path: str) -> GCodeFile:
@@ -134,12 +150,14 @@ def load(path: str) -> GCodeFile:
 def save(gf: GCodeFile, path: str) -> None:
     """Atomically write *gf* to *path*, preserving the original file format."""
     d = os.path.dirname(os.path.abspath(path)) or "."
-    text = to_text(gf)
     if gf.source_format == "bgcode" and gf._bgcode_file_hdr is not None:
+        # BGCode stores thumbnails in dedicated binary blocks; do not also inject
+        # text thumbnail comment blocks into the G-code payload.
+        gcode_text = "\n".join(line.raw for line in gf.lines) + "\n"
         data = _bgcode_reassemble(
             gf._bgcode_file_hdr,
             gf._bgcode_nongcode_blocks or [],
-            text,
+            gcode_text,
         )
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
         try:
@@ -153,6 +171,7 @@ def save(gf: GCodeFile, path: str) -> None:
                 except OSError:
                     pass
     else:
+        text = to_text(gf)
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp", text=True)
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:

@@ -94,6 +94,11 @@ def test_to_text_preserves_comments():
     assert gl.to_text(gl.from_text(text)) == text
 
 
+def test_to_text_empty_stays_empty():
+    gf = gl.from_text("")
+    assert gl.to_text(gf) == ""
+
+
 # ---------------------------------------------------------------------------
 # load — text files
 # ---------------------------------------------------------------------------
@@ -229,6 +234,29 @@ def test_save_bgcode_preserves_thumbnail(tmp_path):
     assert len(thumbs) == 1
     assert thumbs[0].data == img
     assert thumbs[0].width == 32
+
+
+def test_save_bgcode_with_thumbnails_is_idempotent(tmp_path):
+    """Repeated save/load must not inject text thumbnail markers into bgcode G-code."""
+    img = b"\x89PNG\r\n" + b"\x00" * 32
+    tblk = _make_thumbnail_block(img, width=16, height=16, fmt=0)
+    raw = _make_bgcode("G90\nG1 X1 Y1\n", extra_blocks=[tblk])
+    p = tmp_path / "roundtrip.bgcode"
+
+    gf = gl._load_bgcode(raw)
+    gl.save(gf, str(p))
+    gf1 = gl.load(str(p))
+
+    assert len(gf1.thumbnails) == 1
+    assert all("thumbnail" not in ln.raw.lower() for ln in gf1.lines)
+    first_len = len(gf1.lines)
+
+    gl.save(gf1, str(p))
+    gf2 = gl.load(str(p))
+
+    assert len(gf2.thumbnails) == 1
+    assert all("thumbnail" not in ln.raw.lower() for ln in gf2.lines)
+    assert len(gf2.lines) == first_len
 
 
 # ---------------------------------------------------------------------------

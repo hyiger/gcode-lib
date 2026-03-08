@@ -112,8 +112,8 @@ Return the printer-appropriate pressure advance G-code command.  Uses `M572 S<va
 printers and `M900 K<val>` for MINI (Linear Advance).
 
 ```python
-gl.pa_command(0.04, "MK4")   # "M572 S0.04"
-gl.pa_command(0.04, "MINI")  # "M900 K0.04"
+gl.pa_command(0.04, "MK4")   # "M572 S0.0400"
+gl.pa_command(0.04, "MINI")  # "M900 K0.0400"
 ```
 
 ### inject_pa_into_start_gcode
@@ -123,7 +123,7 @@ Inject a pressure advance command into start G-code lines (as stored in an INI v
 ```python
 start_lines = ["G28\n", "G1 Z5\n"]
 updated = gl.inject_pa_into_start_gcode(start_lines, 0.04, "MK4")
-# Appends "M572 S0.04" to the start G-code
+# Appends "M572 S0.0400" to the start G-code
 ```
 
 ---
@@ -171,10 +171,11 @@ suffix = gl.unique_suffix()  # e.g. "a3f1b"
 
 ### safe_filename_part
 
-Sanitise a string for safe use in a filename by removing or replacing unsafe characters.
+Sanitise a string for safe use in a filename by removing NUL bytes, replacing `/` and `\` with
+`_`, and collapsing `..` to `_`.
 
 ```python
-gl.safe_filename_part("PLA @ 215°C")  # "PLA_215C" (example)
+gl.safe_filename_part("../prints/part.gcode")  # "__prints_part.gcode"
 ```
 
 ---

@@ -106,7 +106,7 @@
 
 | Attribute | Type | Description |
 |---|---|---|
-| `version_text` | `str` | Raw version string from `--version` |
+| `version_text` | `str` | Version string parsed from `--help` output |
 | `has_export_gcode` | `bool` | `--export-gcode` flag is available |
 | `has_load_config` | `bool` | `--load` (config) flag is available |
 | `has_help_fff` | `bool` | `--help-fff` flag is available |
@@ -133,6 +133,34 @@
 | `config_ini` | `str \| None` | — | Path to a PrusaSlicer `.ini` config, or `None` |
 | `printer_technology` | `str` | `"FFF"` | Printer technology flag |
 | `extra_args` | `List[str]` | `[]` | Additional CLI arguments appended to the command |
+
+### `PrusaLinkInfo`
+
+| Attribute | Type | Description |
+|---|---|---|
+| `api` | `str` | API version string |
+| `server` | `str` | Server version string |
+| `original` | `str` | Original PrusaLink version string |
+| `text` | `str` | Human-readable version description |
+
+### `PrusaLinkStatus`
+
+| Attribute | Type | Description |
+|---|---|---|
+| `printer_state` | `str` | Current printer state |
+| `temp_nozzle` | `float \| None` | Current nozzle temperature |
+| `temp_bed` | `float \| None` | Current bed temperature |
+| `raw` | `dict` | Full JSON payload |
+
+### `PrusaLinkJob`
+
+| Attribute | Type | Description |
+|---|---|---|
+| `job_id` | `int \| None` | Active job ID |
+| `progress` | `float \| None` | Job progress in percent |
+| `time_remaining` | `int \| None` | Remaining time in seconds |
+| `state` | `str` | Job state |
+| `raw` | `dict` | Full JSON payload |
 
 ## Functions
 
@@ -288,6 +316,23 @@ slice_batch(exe: str, inputs: List[str], output_dir: str,
             parallelism: int = 1) -> List[RunResult]
 ```
 
+Notes:
+- `run_prusaslicer()` returns `RunResult` for completed processes (including non-zero exits), but raises `RuntimeError` on timeout or launch failures.
+- `slice_batch(..., naming=...)` supports `{stem}` placeholders.
+
+### PrusaLink API
+
+```
+prusalink_get_version(base_url: str, api_key: str, timeout: float = 10.0) -> PrusaLinkInfo
+prusalink_get_status(base_url: str, api_key: str, timeout: float = 10.0) -> PrusaLinkStatus
+prusalink_get_job(base_url: str, api_key: str, timeout: float = 10.0) -> PrusaLinkJob
+prusalink_upload(base_url: str, api_key: str, gcode_path: str,
+                 print_after_upload: bool = False,
+                 timeout: float = 120.0) -> str
+```
+
+`PrusaLinkError(status_code: int, message: str)` is raised on HTTP or connection failures.
+
 ### Formatting helpers
 
 ```
@@ -300,10 +345,12 @@ replace_or_append(code: str, axis: str, val: float,
 ### §11 INI Parsing
 
 ```
-parse_prusaslicer_ini(path: str) -> Dict[str, str]
+parse_prusaslicer_ini(path: str) -> Dict[str, Any]
 ```
 
-Parse a PrusaSlicer `.ini` config file and return all key-value pairs as a dict.
+Parse a PrusaSlicer `.ini` and return extracted/normalized keys (for example
+`nozzle_diameter`, `nozzle_temp`, `bed_temp`, `fan_speed`, `layer_height`,
+`extrusion_width`, `bed_center`, `printer_model`, `filament_type`) when present.
 
 ### §12 INI Editing
 
@@ -375,10 +422,10 @@ MBL_TEMP = 170  # default mesh bed leveling temperature (°C)
 ```
 
 ```
-PrinterGCode  # dataclass: start_template, end_template
+PrinterGCode  # dataclass: start, end
 ```
 
-Dataclass holding start and end G-code Jinja-style templates for a printer.
+Dataclass holding start and end G-code `.format(...)` templates for a printer.
 
 ```
 resolve_printer(name: str) -> str
@@ -390,7 +437,7 @@ Normalise and validate a printer name against `KNOWN_PRINTERS`.  Raises `ValueEr
 compute_bed_center(printer: str) -> str
 ```
 
-Return the bed centre coordinates as a string (e.g. `"125,110"`) from `PRINTER_PRESETS`.
+Return the bed centre coordinates as a string (e.g. `"125,105"`) from `PRINTER_PRESETS`.
 
 ```
 compute_bed_shape(printer: str) -> str
@@ -400,7 +447,7 @@ Return the bed shape as a PrusaSlicer `--bed-shape` string from `PRINTER_PRESETS
 
 ```
 compute_m555(bed_center: str, model_width: float,
-             model_depth: float) -> Dict[str, float]
+             model_depth: float) -> Dict[str, int]
 ```
 
 Compute M555 positioning parameters from bed centre and model dimensions.

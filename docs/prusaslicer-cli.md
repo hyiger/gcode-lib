@@ -11,7 +11,7 @@ import gcode_lib as gl
 
 exe = gl.find_prusaslicer_executable()
 print(exe)
-# e.g. /Applications/PrusaSlicer.app/Contents/MacOS/prusa-slicer-console
+# e.g. /Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer-console
 ```
 
 `find_prusaslicer_executable` searches `PATH` and a list of well-known install locations.
@@ -45,8 +45,9 @@ else:
     print("Return code:", result.returncode)
 ```
 
-`run_prusaslicer` captures stdout and stderr, enforces a configurable timeout, and always
-returns a `RunResult` — it never raises on non-zero exit codes.
+`run_prusaslicer` captures stdout and stderr, enforces a configurable timeout, and returns a
+`RunResult` for completed processes (including non-zero exit codes). It raises `RuntimeError`
+on timeout or process-launch failures.
 
 ## Slice a single model
 
@@ -102,8 +103,8 @@ for r in results:
     print(f"{status}: {r.cmd[-1]}")
 ```
 
-The `naming` pattern supports `{stem}` (filename without extension) and `{name}` (full
-filename).  Output files are written to `output_dir`.
+The `naming` pattern supports `{stem}` (filename without extension). Unknown placeholders are
+left unchanged. Output files are written to `output_dir`.
 
 ---
 

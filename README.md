@@ -4,16 +4,28 @@ A general-purpose Python library for parsing, analysing, and transforming G-code
 Supports both plain-text `.gcode` and Prusa binary `.bgcode` formats, with a full planar
 post-processing toolkit optimised for PrusaSlicer FDM workflows.
 
-**Requirements:** Python 3.10+ · stdlib only (no third-party dependencies)
+**Requirements:** Python 3.10+ (core uses stdlib only; VTK is optional for STL thumbnail rendering)
 
 ---
 
 ## Installation
 
-Copy `gcode_lib.py` into your project (or onto `PYTHONPATH`).  No package installation required.
+Install from this repository:
 
 ```bash
-cp gcode_lib.py /your/project/
+python -m pip install .
+```
+
+For editable development:
+
+```bash
+python -m pip install -e .
+```
+
+Optional STL thumbnail rendering support (VTK):
+
+```bash
+python -m pip install ".[thumbnails]"
 ```
 
 ---
@@ -54,7 +66,7 @@ gl.save(gf, "benchy_shifted.gcode")
 - **[Statistics](docs/statistics.md)** — bounding box, move/arc/travel counts, layer iteration
 - **[Presets](docs/presets.md)** — printer bed dimensions and filament parameters for Prusa printers, auto-detection from G-code
 - **[Utilities](docs/utilities.md)** — template rendering, thumbnail encoding
-- **[Binary .bgcode](docs/binary-bgcode.md)** — full read/write support including DEFLATE, Heatshrink, and MeatPack
+- **[Binary .bgcode](docs/binary-bgcode.md)** — full BGCode read support (None/DEFLATE/Heatshrink + MeatPack) and BGCode v2 writing
 - **[PrusaSlicer CLI](docs/prusaslicer-cli.md)** — executable discovery, capability probing, single and batch slicing, slicer compatibility notes
 - **[API reference](docs/api-reference.md)** — complete function signatures, data classes, and constants
 
@@ -103,10 +115,11 @@ print(len(gf.thumbnails))       # populated for .bgcode and plain-text files wit
 
 ## Limitations
 
-- **G91 relative XY in transforms:** `apply_xy_transform`, `apply_skew`, `translate_xy`, and
-  `translate_xy_allow_arcs` raise `ValueError` if a `G0`/`G1` move with X/Y words is encountered
-  while the modal state is in G91 mode.  Use `to_absolute_xy()` to convert relative segments to
-  absolute before transforming — see [G91 and relative-mode handling](docs/transforms.md#g91-and-relative-mode-handling).
+- **G91 relative XY in transforms:** `apply_xy_transform`, `apply_skew`, `translate_xy`,
+  `translate_xy_allow_arcs`, `rotate_xy`, and `apply_xy_transform_by_layer` raise `ValueError`
+  if a move/arc with X/Y words is encountered while the modal state is in G91 mode.  Use
+  `to_absolute_xy()` to convert relative segments to absolute before transforming — see
+  [G91 and relative-mode handling](docs/transforms.md#g91-and-relative-mode-handling).
 - **Arc endpoint tracking only.**  `advance_state` updates position to the G2/G3 endpoint but
   does not interpolate intermediate arc positions.  Use `linearize_arcs` if you need full path
   coverage.

@@ -119,6 +119,38 @@ class TestParseTextThumbnails:
         gf = gl.from_text(text)
         assert gf.thumbnails[0].format_code == gl._IMG_PNG
 
+    def test_invalid_thumbnail_block_is_preserved(self):
+        text = (
+            "; thumbnail begin 16x16 12\n"
+            "; not_base64$$\n"
+            "; thumbnail end\n"
+            "G1 X10 Y10\n"
+        )
+        gf = gl.from_text(text)
+        assert gf.thumbnails == []
+        assert [ln.raw for ln in gf.lines] == [
+            "; thumbnail begin 16x16 12",
+            "; not_base64$$",
+            "; thumbnail end",
+            "G1 X10 Y10",
+        ]
+
+    def test_thumbnail_begin_without_end_does_not_consume_lines(self):
+        text = (
+            "G90\n"
+            "; thumbnail begin 16x16 12\n"
+            "; not_base64$$\n"
+            "G1 X10 Y10\n"
+        )
+        gf = gl.from_text(text)
+        assert gf.thumbnails == []
+        assert [ln.raw for ln in gf.lines] == [
+            "G90",
+            "; thumbnail begin 16x16 12",
+            "; not_base64$$",
+            "G1 X10 Y10",
+        ]
+
     def test_raw_block_is_empty_for_text_source(self):
         text = _thumb_block("thumbnail", 16, 16, PNG_DATA) + GCODE_BODY
         gf = gl.from_text(text)

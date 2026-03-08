@@ -655,17 +655,17 @@ def rotate_xy(
                 new_words["Y"] = yr
                 new_code = replace_or_append(new_code, "Y", yr, xy_decimals, other_decimals)
 
-            if line.is_arc:
+            if line.is_arc and ("I" in words or "J" in words):
                 i_val = words.get("I", 0.0)
                 j_val = words.get("J", 0.0)
                 if state.ij_relative:
                     ir, jr = _rot_vec(i_val, j_val)
                 else:
                     ir, jr = _rot(i_val, j_val)
-                if "I" in words or not state.ij_relative:
+                if "I" in words:
                     new_words["I"] = ir
                     new_code = replace_or_append(new_code, "I", ir, xy_decimals, other_decimals)
-                if "J" in words or not state.ij_relative:
+                if "J" in words:
                     new_words["J"] = jr
                     new_code = replace_or_append(new_code, "J", jr, xy_decimals, other_decimals)
 
@@ -681,7 +681,11 @@ def rotate_xy(
     has_bed = (bed_min_x is not None and bed_max_x is not None
                and bed_min_y is not None and bed_max_y is not None)
     if has_bed:
-        rb = compute_bounds(result, skip_negative_y=skip_negative_y)
+        rb = compute_bounds(
+            result,
+            skip_negative_y=skip_negative_y,
+            initial_state=initial_state,
+        )
         if rb.valid:
             avail_x = (bed_max_x - bed_min_x) - 2 * margin
             avail_y = (bed_max_y - bed_min_y) - 2 * margin
@@ -699,6 +703,7 @@ def rotate_xy(
                     result, dx, dy,
                     xy_decimals=xy_decimals,
                     other_decimals=other_decimals,
+                    initial_state=initial_state,
                     skip_negative_y=skip_negative_y,
                 )
 
@@ -726,6 +731,16 @@ def _point_in_polygon(x: float, y: float, polygon: List[Tuple[float, float]]) ->
     for i in range(n):
         xi, yi = polygon[i]
         xj, yj = polygon[j]
+        # Treat points on polygon edges as in-bounds.
+        dx = xj - xi
+        dy = yj - yi
+        cross = (x - xi) * dy - (y - yi) * dx
+        if abs(cross) <= EPS:
+            if (
+                min(xi, xj) - EPS <= x <= max(xi, xj) + EPS and
+                min(yi, yj) - EPS <= y <= max(yi, yj) + EPS
+            ):
+                return True
         if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
             inside = not inside
         j = i
@@ -767,6 +782,9 @@ def find_oob_moves(
     initial_state: Optional[ModalState] = None,
 ) -> List[OOBHit]:
     """Return all G0/G1 move endpoints that fall outside *bed_polygon*."""
+    if len(bed_polygon) < 3:
+        raise ValueError("bed_polygon must contain at least 3 points")
+
     hits: List[OOBHit] = []
     state = initial_state.copy() if initial_state else ModalState()
 
@@ -858,8 +876,19 @@ def recenter_to_bed(
         ys = bed_cy + (y - py_c) * scale
         return xs, ys
 
+    lines_for_fit = (
+        linearize_arcs(
+            lines,
+            xy_decimals=xy_decimals,
+            other_decimals=other_decimals,
+            initial_state=initial_state,
+        )
+        if any(line.is_arc for line in lines)
+        else lines
+    )
+
     return apply_xy_transform(
-        lines, _scale_to_bed,
+        lines_for_fit, _scale_to_bed,
         xy_decimals=xy_decimals,
         other_decimals=other_decimals,
         initial_state=initial_state,

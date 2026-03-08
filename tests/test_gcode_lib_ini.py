@@ -220,6 +220,11 @@ def test_parse_ini_filament_type(tmp_path):
     assert result["filament_type"] == "PETG"
 
 
+def test_parse_ini_missing_file_returns_empty_dict(tmp_path):
+    missing = tmp_path / "missing.ini"
+    assert gl.parse_prusaslicer_ini(str(missing)) == {}
+
+
 def test_parse_ini_missing_keys_empty_dict(tmp_path):
     ini = tmp_path / "test.ini"
     ini.write_text("# nothing relevant here\n")
@@ -314,6 +319,13 @@ def test_replace_ini_value_only_first_occurrence():
     assert found is True
     assert result[0] == "temperature = 220"
     assert result[1] == "temperature = 210"
+
+
+def test_replace_ini_value_preserves_line_ending():
+    lines = ["bed_temperature = 60\n"]
+    result, found = gl.replace_ini_value(lines, "bed_temperature", "80")
+    assert found is True
+    assert result == ["bed_temperature = 80\n"]
 
 
 # ===========================================================================
