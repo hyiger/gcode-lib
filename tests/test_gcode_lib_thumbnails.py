@@ -545,6 +545,31 @@ class TestPatchSlicerMetadata:
         # "UNKNOWN" printer is not in _PRINTER_SETTINGS_IDS
         gl.patch_slicer_metadata(gf, "UNKNOWN", 0.4)
 
+    def test_patches_printer_model(self):
+        """patch_slicer_metadata sets both printer_settings_id and printer_model."""
+        # Build a minimal SLICER_METADATA block (block type 2, uncompressed)
+        payload = b"printer_settings_id=\nprinter_model=\n"
+        hdr = struct.pack("<HHI", 2, 0, len(payload))
+        params = b"\x00\x00"
+        block = hdr + params + payload
+        crc = struct.pack("<I", zlib.crc32(block) & 0xFFFFFFFF)
+        block = block + crc
+
+        gf = gl.GCodeFile(
+            lines=[],
+            thumbnails=[],
+            source_format="bgcode",
+            _bgcode_nongcode_blocks=[block],
+        )
+        gl.patch_slicer_metadata(gf, "COREONE", 0.4)
+
+        # Decode the patched block
+        patched = gf._bgcode_nongcode_blocks[0]
+        _, _, usize = struct.unpack_from("<HHI", patched, 0)
+        text = patched[10:10 + usize].decode("utf-8")
+        assert "printer_settings_id=Prusa CORE One HF0.4 nozzle" in text
+        assert "printer_model=COREONE" in text
+
 
 class TestNeedsSubprocessRender:
     @patch("gcode_lib.platform")

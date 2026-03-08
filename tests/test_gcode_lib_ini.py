@@ -398,3 +398,44 @@ def test_inject_pa_appends_when_key_missing():
     result = gl.inject_pa_into_start_gcode(lines, 0.04)
     assert len(result) == 2
     assert result[1] == "start_filament_gcode = M572 S0.0400"
+
+
+# ---------------------------------------------------------------------------
+# parse_prusaslicer_ini — nozzle flags
+# ---------------------------------------------------------------------------
+
+
+def test_parse_ini_nozzle_high_flow_true(tmp_path):
+    ini = tmp_path / "test.ini"
+    ini.write_text("nozzle_high_flow = 1\n")
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert result["nozzle_high_flow"] is True
+
+
+def test_parse_ini_nozzle_high_flow_false(tmp_path):
+    ini = tmp_path / "test.ini"
+    ini.write_text("nozzle_high_flow = 0\n")
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert result["nozzle_high_flow"] is False
+
+
+def test_parse_ini_nozzle_hardened_true(tmp_path):
+    ini = tmp_path / "test.ini"
+    ini.write_text("filament_abrasive = 1\n")
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert result["nozzle_hardened"] is True
+
+
+def test_parse_ini_nozzle_hardened_false(tmp_path):
+    ini = tmp_path / "test.ini"
+    ini.write_text("filament_abrasive = 0\n")
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert result["nozzle_hardened"] is False
+
+
+def test_parse_ini_nozzle_flags_missing(tmp_path):
+    ini = tmp_path / "test.ini"
+    ini.write_text("temperature = 210\n")
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert "nozzle_high_flow" not in result
+    assert "nozzle_hardened" not in result
