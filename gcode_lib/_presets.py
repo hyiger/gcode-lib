@@ -431,7 +431,7 @@ def patch_slicer_metadata(
     *,
     verbose: bool = False,
 ) -> None:
-    """Patch the SLICER_METADATA block to set ``printer_settings_id``."""
+    """Patch the SLICER_METADATA block to set ``printer_settings_id`` and ``printer_model``."""
     if gf.source_format != "bgcode":
         return
 
@@ -457,12 +457,18 @@ def patch_slicer_metadata(
         old_block = blocks[idx]
         new_block = _rebuild_slicer_meta_block(
             old_block,
-            {"printer_settings_id": settings_id},
+            {
+                "printer_settings_id": settings_id,
+                "printer_model": printer_model,
+            },
         )
         blocks[idx] = new_block
 
         if verbose:
-            print(f"[DEBUG] Patched printer_settings_id={settings_id}")
+            print(
+                f"[DEBUG] Patched printer_settings_id={settings_id}, "
+                f"printer_model={printer_model}"
+            )
 
     except Exception as exc:
         warnings.warn(f"Slicer metadata patch failed: {exc}")

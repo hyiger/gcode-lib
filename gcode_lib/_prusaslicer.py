@@ -455,6 +455,8 @@ def parse_prusaslicer_ini(path: str) -> Dict[str, Any]:
       ``bed_shape``).
     - ``printer_model`` (str): Printer model identifier.
     - ``filament_type`` (str): Filament type (e.g. ``"PETG"``, ``"PLA"``).
+    - ``nozzle_high_flow`` (bool): ``True`` if ``nozzle_high_flow = 1``.
+    - ``nozzle_hardened`` (bool): ``True`` if ``filament_abrasive = 1``.
 
     Keys are omitted when the ``.ini`` file does not contain the relevant
     setting or the value cannot be parsed.
@@ -553,6 +555,18 @@ def parse_prusaslicer_ini(path: str) -> Dict[str, Any]:
         val_s = _ini_first_value(flat["filament_type"]).strip()
         if val_s:
             result["filament_type"] = val_s
+
+    # --- Nozzle high-flow flag ---
+    if "nozzle_high_flow" in flat:
+        val_i = _ini_parse_int(flat["nozzle_high_flow"])
+        if val_i is not None:
+            result["nozzle_high_flow"] = val_i != 0
+
+    # --- Nozzle hardened (abrasive-resistant) flag ---
+    if "filament_abrasive" in flat:
+        val_i = _ini_parse_int(flat["filament_abrasive"])
+        if val_i is not None:
+            result["nozzle_hardened"] = val_i != 0
 
     return result
 
