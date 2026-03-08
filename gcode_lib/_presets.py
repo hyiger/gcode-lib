@@ -36,31 +36,43 @@ PRINTER_PRESETS: Dict[str, Dict[str, float]] = {
         "bed_x": 250.0,
         "bed_y": 220.0,
         "max_z": 250.0,
+        "max_nozzle_temp": 290.0,
+        "max_bed_temp": 120.0,
     },
     "COREONEL": {
         "bed_x": 300.0,
         "bed_y": 300.0,
         "max_z": 330.0,
+        "max_nozzle_temp": 290.0,
+        "max_bed_temp": 120.0,
     },
     "MK4": {
         "bed_x": 250.0,
         "bed_y": 210.0,
         "max_z": 220.0,
+        "max_nozzle_temp": 290.0,
+        "max_bed_temp": 120.0,
     },
     "MK3S": {
         "bed_x": 250.0,
         "bed_y": 210.0,
         "max_z": 210.0,
+        "max_nozzle_temp": 290.0,
+        "max_bed_temp": 120.0,
     },
     "MINI": {
         "bed_x": 180.0,
         "bed_y": 180.0,
         "max_z": 180.0,
+        "max_nozzle_temp": 280.0,
+        "max_bed_temp": 100.0,
     },
     "XL": {
         "bed_x": 360.0,
         "bed_y": 360.0,
         "max_z": 360.0,
+        "max_nozzle_temp": 290.0,
+        "max_bed_temp": 120.0,
     },
 }
 
