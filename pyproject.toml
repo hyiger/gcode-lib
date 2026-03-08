@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gcode-lib"
-version = "1.1.3"
+version = "1.1.4"
 description = "Parse, analyse, and transform G-code files — plain-text .gcode and Prusa .bgcode"
 readme = "README.md"
 license = { file = "LICENSE" }

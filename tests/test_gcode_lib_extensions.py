@@ -527,12 +527,12 @@ class TestDetectPrintVolume:
     def test_returns_volume_for_coreone(self):
         lines = gl.parse_lines('M862.3 P "COREONE"\n')
         vol = gl.detect_print_volume(lines)
-        assert vol == {"bed_x": 250.0, "bed_y": 220.0, "max_z": 250.0}
+        assert vol == {"bed_x": 250.0, "bed_y": 220.0, "max_z": 250.0, "max_nozzle_temp": 290.0, "max_bed_temp": 120.0}
 
     def test_returns_volume_for_coreonel(self):
         lines = gl.parse_lines('M862.3 P "COREONEL"\n')
         vol = gl.detect_print_volume(lines)
-        assert vol == {"bed_x": 300.0, "bed_y": 300.0, "max_z": 330.0}
+        assert vol == {"bed_x": 300.0, "bed_y": 300.0, "max_z": 330.0, "max_nozzle_temp": 290.0, "max_bed_temp": 120.0}
 
     def test_returns_none_when_no_printer(self):
         lines = gl.parse_lines("G90\nG1 X10 Y10\n")
@@ -552,7 +552,7 @@ class TestDetectPrintVolume:
     def test_mk4s_alias_uses_mk4_dimensions(self):
         lines = gl.parse_lines('M862.3 P "MK4S"\n')
         vol = gl.detect_print_volume(lines)
-        assert vol == {"bed_x": 250.0, "bed_y": 210.0, "max_z": 220.0}
+        assert vol == {"bed_x": 250.0, "bed_y": 210.0, "max_z": 220.0, "max_nozzle_temp": 290.0, "max_bed_temp": 120.0}
 
 
 # ===========================================================================
