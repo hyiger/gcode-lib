@@ -281,6 +281,7 @@ def run_prusaslicer(
     try:
         r = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=timeout_s,
         )
         return RunResult(cmd=cmd, returncode=r.returncode, stdout=r.stdout, stderr=r.stderr)
