@@ -84,7 +84,7 @@ def _parse_text_thumbnails(
                     fmt_code = code
                     break
 
-        params = struct.pack("<HHH", width, height, fmt_code)
+        params = struct.pack("<HHH", fmt_code, width, height)
         thumbnails.append(Thumbnail(params=params, data=img_data, _raw_block=b""))
 
     return result, thumbnails
@@ -195,7 +195,7 @@ def encode_thumbnail_comment_block(
     png_bytes: bytes,
 ) -> str:
     """Encode a PNG image as a PrusaSlicer-compatible thumbnail comment block."""
-    params = struct.pack("<HHH", width, height, _IMG_PNG)
+    params = struct.pack("<HHH", _IMG_PNG, width, height)
     thumb = Thumbnail(params=params, data=png_bytes, _raw_block=b"")
     return _render_text_thumbnails([thumb])
 

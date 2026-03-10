@@ -270,7 +270,7 @@ class TestInterchangeability:
         file_hdr = MAGIC + struct.pack("<IH", 1, 1)
 
         # Thumbnail block
-        t_params  = struct.pack("<HHH", width, height, IMG_PNG)
+        t_params  = struct.pack("<HHH", IMG_PNG, width, height)
         t_payload = data
         t_hdr     = struct.pack("<HHI", BLK_THUMB, COMP_NONE, len(t_payload))
         t_cksum   = zlib.crc32(t_hdr) & 0xFFFFFFFF
@@ -410,15 +410,15 @@ class TestBuildThumbnailBlock:
         block = gl.build_thumbnail_block(PNG_DATA, 16, 16)
         assert PNG_DATA in block
 
-    def test_params_order_width_height_format(self):
-        """build_thumbnail_block must write params as (width, height, format)
-        so that Thumbnail.width/height/format_code read them back correctly."""
+    def test_params_order_format_width_height(self):
+        """build_thumbnail_block must write params as (format, width, height)
+        matching the libbgcode spec so that firmware can decode them."""
         block = gl.build_thumbnail_block(PNG_DATA, 220, 124)
         # params start at offset 8 (after 8-byte header)
-        w, h, fmt = struct.unpack_from("<HHH", block, 8)
+        fmt, w, h = struct.unpack_from("<HHH", block, 8)
+        assert fmt == gl._IMG_PNG
         assert w == 220
         assert h == 124
-        assert fmt == gl._IMG_PNG
 
     def test_round_trip_via_read_bgcode(self):
         """Thumbnail built by build_thumbnail_block should round-trip through
