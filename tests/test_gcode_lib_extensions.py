@@ -672,13 +672,13 @@ class TestReadWriteBgcode:
     def test_write_bgcode_with_thumbnail(self):
         import base64
         # 1-byte payload thumbnail
-        params = struct.pack("<HHH", 16, 16, 0)  # PNG
+        params = struct.pack("<HHH", 0, 16, 16)  # PNG
         thumb = gl.Thumbnail(params=params, data=b"\x89PNG fake", _raw_block=b"")
         data = gl.write_bgcode(self.SIMPLE_GCODE, thumbnails=[thumb])
         assert data[:4] == b"GCDE"
 
     def test_read_bgcode_with_thumbnail_round_trip(self):
-        params = struct.pack("<HHH", 8, 8, 0)
+        params = struct.pack("<HHH", 0, 8, 8)
         thumb = gl.Thumbnail(params=params, data=b"fakepng_data_here", _raw_block=b"")
         data = gl.write_bgcode(self.SIMPLE_GCODE, thumbnails=[thumb])
         gf = gl.read_bgcode(data)

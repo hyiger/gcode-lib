@@ -72,30 +72,30 @@ class GCodeLine:
 class Thumbnail:
     """An image thumbnail from a G-code file (text or binary).
 
-    ``params`` holds a 6-byte block (width uint16, height uint16, format
+    ``params`` holds a 6-byte block (format uint16, width uint16, height
     uint16) following the libbgcode spec.  For thumbnails parsed from
     plain-text files the format code is inferred from the keyword
     (``thumbnail_JPG`` / ``thumbnail_QOI``) or from the decoded image magic
     bytes.  ``_raw_block`` is set only for .bgcode sources; it carries the
     verbatim block bytes used for lossless binary round-trips.
     """
-    params: bytes        # 6-byte block params (width, height, fmt_code)
+    params: bytes        # 6-byte block params (fmt_code, width, height)
     data: bytes          # Decompressed / decoded image bytes
     _raw_block: bytes    # Full bgcode block bytes (b"" for text sources)
 
     @property
+    def format_code(self) -> int:
+        """Raw format code from the bgcode thumbnail block params."""
+        return struct.unpack_from("<H", self.params, 0)[0]
+
+    @property
     def width(self) -> int:
         """Image width in pixels."""
-        return struct.unpack_from("<H", self.params, 0)[0]
+        return struct.unpack_from("<H", self.params, 2)[0]
 
     @property
     def height(self) -> int:
         """Image height in pixels."""
-        return struct.unpack_from("<H", self.params, 2)[0]
-
-    @property
-    def format_code(self) -> int:
-        """Raw format code from the bgcode thumbnail block params."""
         return struct.unpack_from("<H", self.params, 4)[0]
 
 

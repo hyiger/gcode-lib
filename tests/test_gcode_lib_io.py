@@ -52,7 +52,7 @@ def _make_thumbnail_block(img_data: bytes, width: int = 16, height: int = 16, fm
     BLK_THUMBNAIL = 5
     COMP_NONE     = 0
     hdr    = struct.pack("<HHI", BLK_THUMBNAIL, COMP_NONE, len(img_data))
-    params = struct.pack("<HHH", width, height, fmt)
+    params = struct.pack("<HHH", fmt, width, height)
     cksum  = zlib.crc32(hdr) & 0xFFFFFFFF
     cksum  = zlib.crc32(params, cksum) & 0xFFFFFFFF
     cksum  = zlib.crc32(img_data, cksum) & 0xFFFFFFFF

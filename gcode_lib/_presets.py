@@ -363,7 +363,7 @@ def render_stl_to_png(stl_path: str, width: int, height: int) -> bytes:
 def build_thumbnail_block(png_data: bytes, width: int, height: int) -> bytes:
     """Construct a raw bgcode thumbnail block from PNG image data."""
     hdr = struct.pack("<HHI", _BLK_THUMBNAIL, _COMP_NONE, len(png_data))
-    params = struct.pack("<HHH", width, height, _IMG_PNG)
+    params = struct.pack("<HHH", _IMG_PNG, width, height)
     cksum = zlib.crc32(hdr) & 0xFFFFFFFF
     cksum = zlib.crc32(params, cksum) & 0xFFFFFFFF
     cksum = zlib.crc32(png_data, cksum) & 0xFFFFFFFF
@@ -404,7 +404,7 @@ def inject_thumbnails(
             _render = sys.modules[__name__.rpartition(".")[0]].render_stl_to_png
             png_data = _render(stl_path, spec.width, spec.height)
             block = build_thumbnail_block(png_data, spec.width, spec.height)
-            gl_params = struct.pack("<HHH", spec.width, spec.height, _IMG_PNG)
+            gl_params = struct.pack("<HHH", _IMG_PNG, spec.width, spec.height)
             new_blocks.append(block)
             new_thumbs.append(
                 Thumbnail(params=gl_params, data=png_data, _raw_block=block)
