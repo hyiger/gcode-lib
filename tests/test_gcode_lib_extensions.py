@@ -998,6 +998,15 @@ class TestRunPrusaSlicerErrors:
             with pytest.raises(RuntimeError, match="Cannot run"):
                 gl.run_prusaslicer("/fake/slicer", ["--help"])
 
+    def test_stdin_devnull(self):
+        """stdin must be DEVNULL to prevent interactive prompts from blocking."""
+        from unittest.mock import patch, MagicMock
+        fake_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("gcode_lib.subprocess.run", return_value=fake_result) as mock_run:
+            gl.run_prusaslicer("/fake/slicer", ["--help"])
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["stdin"] is subprocess.DEVNULL
+
 
 class TestProbePrusaSlicerCapabilitiesErrors:
     def test_timeout_raises_runtime_error(self):
