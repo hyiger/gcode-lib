@@ -457,7 +457,8 @@ def parse_prusaslicer_ini(path: str) -> Dict[str, Any]:
     - ``printer_model`` (str): Printer model identifier.
     - ``filament_type`` (str): Filament type (e.g. ``"PETG"``, ``"PLA"``).
     - ``nozzle_high_flow`` (bool): ``True`` if ``nozzle_high_flow = 1``.
-    - ``nozzle_hardened`` (bool): ``True`` if ``filament_abrasive = 1``.
+    - ``nozzle_hardened`` (bool): ``True`` if ``filament_abrasive = 1``
+      or ``printer_settings_id`` contains "Diamondback".
 
     Keys are omitted when the ``.ini`` file does not contain the relevant
     setting or the value cannot be parsed.
@@ -564,10 +565,25 @@ def parse_prusaslicer_ini(path: str) -> Dict[str, Any]:
             result["nozzle_high_flow"] = val_i != 0
 
     # --- Nozzle hardened (abrasive-resistant) flag ---
+    # Detect from filament_abrasive (filament requires hardened nozzle) OR
+    # from printer_settings_id containing "Diamondback" (Prusa hardened
+    # nozzle variant).  Only set the key when at least one source is present.
+    _has_hardened_source = False
+    hardened = False
     if "filament_abrasive" in flat:
         val_i = _ini_parse_int(flat["filament_abrasive"])
         if val_i is not None:
-            result["nozzle_hardened"] = val_i != 0
+            _has_hardened_source = True
+            if val_i != 0:
+                hardened = True
+    if "printer_settings_id" in flat:
+        psid = _ini_first_value(flat["printer_settings_id"]).strip()
+        if psid:
+            _has_hardened_source = True
+            if "diamondback" in psid.lower():
+                hardened = True
+    if _has_hardened_source:
+        result["nozzle_hardened"] = hardened
 
     return result
 

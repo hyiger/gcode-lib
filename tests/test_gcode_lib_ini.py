@@ -433,6 +433,28 @@ def test_parse_ini_nozzle_hardened_false(tmp_path):
     assert result["nozzle_hardened"] is False
 
 
+def test_parse_ini_nozzle_hardened_from_diamondback(tmp_path):
+    """printer_settings_id containing 'Diamondback' sets nozzle_hardened."""
+    ini = tmp_path / "test.ini"
+    ini.write_text(
+        "filament_abrasive = 0\n"
+        "printer_settings_id = Prusa CORE One 0.6 Diamondback\n"
+    )
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert result["nozzle_hardened"] is True
+
+
+def test_parse_ini_nozzle_hardened_non_diamondback(tmp_path):
+    """Non-Diamondback printer with non-abrasive filament → hardened False."""
+    ini = tmp_path / "test.ini"
+    ini.write_text(
+        "filament_abrasive = 0\n"
+        "printer_settings_id = Prusa CORE One 0.6\n"
+    )
+    result = gl.parse_prusaslicer_ini(str(ini))
+    assert result["nozzle_hardened"] is False
+
+
 def test_parse_ini_nozzle_flags_missing(tmp_path):
     ini = tmp_path / "test.ini"
     ini.write_text("temperature = 210\n")
