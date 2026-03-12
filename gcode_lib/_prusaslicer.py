@@ -139,6 +139,27 @@ _PS_PATH_NAMES: List[str] = [
 # ---------------------------------------------------------------------------
 
 
+def _resolve_macos_app(path: str) -> Optional[str]:
+    """Resolve a macOS ``.app`` bundle path to the executable inside.
+
+    If *path* points to a ``.app`` directory (with or without trailing
+    slash), returns the path to ``PrusaSlicer-console`` or ``PrusaSlicer``
+    inside ``Contents/MacOS/``.  Returns ``None`` if *path* is not a
+    ``.app`` bundle or no executable is found inside.
+    """
+    clean = path.rstrip("/").rstrip("\\")
+    if not clean.endswith(".app"):
+        return None
+    if not os.path.isdir(clean):
+        return None
+    for name in ("PrusaSlicer-console", "PrusaSlicer", "prusa-slicer-console",
+                 "prusa-slicer"):
+        exe = os.path.join(clean, "Contents", "MacOS", name)
+        if os.path.isfile(exe):
+            return exe
+    return None
+
+
 def find_prusaslicer_executable(
     prefer_console: bool = True,
     explicit_path: Optional[str] = None,
@@ -163,6 +184,10 @@ def find_prusaslicer_executable(
         If no PrusaSlicer executable can be located.
     """
     if explicit_path is not None:
+        # Resolve macOS .app bundles to the executable inside.
+        resolved = _resolve_macos_app(explicit_path)
+        if resolved is not None:
+            return resolved
         if not os.path.isfile(explicit_path):
             raise FileNotFoundError(
                 f"Explicit PrusaSlicer path not found: {explicit_path!r}"
