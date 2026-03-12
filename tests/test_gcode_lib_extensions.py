@@ -753,6 +753,83 @@ class TestSliceModelCommand:
         assert args[idx + 1] == "SLA"
 
 
+class TestResolveMacosApp:
+    """Test _resolve_macos_app() .app bundle resolution."""
+
+    def test_not_app_returns_none(self):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        assert _resolve_macos_app("/usr/bin/prusa-slicer") is None
+
+    def test_nonexistent_app_returns_none(self):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        assert _resolve_macos_app("/no/such/Thing.app") is None
+
+    def test_trailing_slash_stripped(self):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        assert _resolve_macos_app("/no/such/Thing.app/") is None
+
+    def test_resolves_console_exe(self, tmp_path):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        # Create a fake .app bundle with PrusaSlicer-console inside.
+        app_dir = tmp_path / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        console = macos_dir / "PrusaSlicer-console"
+        console.touch()
+        result = _resolve_macos_app(str(app_dir))
+        assert result == str(console)
+
+    def test_resolves_gui_exe(self, tmp_path):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        # Only PrusaSlicer (not -console) is present.
+        app_dir = tmp_path / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        gui = macos_dir / "PrusaSlicer"
+        gui.touch()
+        result = _resolve_macos_app(str(app_dir))
+        assert result == str(gui)
+
+    def test_prefers_console_over_gui(self, tmp_path):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        app_dir = tmp_path / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        (macos_dir / "PrusaSlicer-console").touch()
+        (macos_dir / "PrusaSlicer").touch()
+        result = _resolve_macos_app(str(app_dir))
+        assert result.endswith("PrusaSlicer-console")
+
+    def test_trailing_slash(self, tmp_path):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        app_dir = tmp_path / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        (macos_dir / "PrusaSlicer").touch()
+        result = _resolve_macos_app(str(app_dir) + "/")
+        assert result is not None
+        assert result.endswith("PrusaSlicer")
+
+    def test_spaces_in_path(self, tmp_path):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        parent = tmp_path / "Original Prusa Drivers"
+        app_dir = parent / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        (macos_dir / "PrusaSlicer-console").touch()
+        result = _resolve_macos_app(str(app_dir))
+        assert result is not None
+        assert "Original Prusa Drivers" in result
+
+    def test_empty_app_bundle_returns_none(self, tmp_path):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        app_dir = tmp_path / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        # No executables inside
+        assert _resolve_macos_app(str(app_dir)) is None
+
+
 class TestFindPrusaSlicerExecutable:
     def test_explicit_path_not_found_raises(self):
         with pytest.raises(FileNotFoundError, match="Explicit"):
@@ -767,6 +844,18 @@ class TestFindPrusaSlicerExecutable:
              patch("gcode_lib.os.path.isfile", return_value=False):
             with pytest.raises(FileNotFoundError):
                 gl.find_prusaslicer_executable()
+
+    def test_explicit_app_bundle_resolves(self, tmp_path):
+        """An explicit .app path resolves to the executable inside."""
+        app_dir = tmp_path / "Original Prusa Drivers" / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        console = macos_dir / "PrusaSlicer-console"
+        console.touch()
+        result = gl.find_prusaslicer_executable(
+            explicit_path=str(app_dir) + "/",
+        )
+        assert result == str(console)
 
 
 # ===========================================================================
