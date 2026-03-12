@@ -8,10 +8,12 @@ from __future__ import annotations
 import json
 import sys
 import uuid
+from http.client import InvalidURL
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
@@ -138,7 +140,10 @@ def _prusalink_request(
     if extra_headers:
         headers.update(extra_headers)
 
-    req = Request(url, data=data, headers=headers, method=method)
+    try:
+        req = Request(url, data=data, headers=headers, method=method)
+    except ValueError as exc:
+        raise PrusaLinkError(0, f"Invalid URL: {exc}") from exc
     # Look up urlopen via the parent package so mock.patch("gcode_lib.urlopen") works.
     _urlopen = sys.modules[__name__.rpartition(".")[0]].urlopen
     try:
@@ -155,6 +160,8 @@ def _prusalink_request(
         raise PrusaLinkError(0, str(exc.reason)) from exc
     except TimeoutError as exc:
         raise PrusaLinkError(0, "Connection timed out") from exc
+    except InvalidURL as exc:
+        raise PrusaLinkError(0, f"Invalid URL: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +326,8 @@ def prusalink_upload(
 
     file_data = p.read_bytes()
     filename = p.name
-    path = f"/api/v1/files/usb/{filename}"
+    # URL-encode filename to support spaces and other reserved URL characters.
+    path = f"/api/v1/files/usb/{quote(filename, safe='')}"
 
     extra_headers: Dict[str, str] = {
         "Content-Length": str(len(file_data)),

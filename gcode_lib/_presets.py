@@ -326,6 +326,9 @@ def parse_thumbnail_specs(spec: str) -> List[ThumbnailSpec]:
         except ValueError:
             warnings.warn(f"Skipping invalid thumbnail spec: {part!r}")
             continue
+        if w <= 0 or h <= 0:
+            warnings.warn(f"Skipping invalid thumbnail spec: {part!r}")
+            continue
         specs.append(ThumbnailSpec(width=w, height=h))
     return specs
 

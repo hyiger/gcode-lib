@@ -288,6 +288,60 @@ def test_bgcode_split_no_gcode_block():
         gl._bgcode_split(file_hdr + meta)
 
 
+def test_bgcode_split_invalid_utf8_gcode_raises_valueerror():
+    MAGIC = b"GCDE"
+    BLK_GCODE = 1
+    COMP_NONE = 0
+    ENC_RAW = 0
+
+    file_hdr = MAGIC + struct.pack("<IH", 1, 1)
+    payload = b"\xff\xfe\xfd"
+    hdr = struct.pack("<HHI", BLK_GCODE, COMP_NONE, len(payload))
+    params = struct.pack("<H", ENC_RAW)
+    cksum = zlib.crc32(hdr) & 0xFFFFFFFF
+    cksum = zlib.crc32(params, cksum) & 0xFFFFFFFF
+    cksum = zlib.crc32(payload, cksum) & 0xFFFFFFFF
+    raw = file_hdr + hdr + params + payload + struct.pack("<I", cksum)
+
+    with pytest.raises(ValueError, match="Invalid UTF-8"):
+        gl._bgcode_split(raw)
+
+
+def test_bgcode_split_rejects_oversized_uncompressed_block():
+    MAGIC = b"GCDE"
+    BLK_GCODE = 1
+    COMP_NONE = 0
+
+    file_hdr = MAGIC + struct.pack("<IH", 1, 1)
+    # Header-only malformed block with an absurd uncompressed size. The parser
+    # should reject on declared size before attempting payload processing.
+    raw = file_hdr + struct.pack("<HHI", BLK_GCODE, COMP_NONE, 0xFFFFFFFF)
+
+    with pytest.raises(ValueError, match="exceeds maximum"):
+        gl._bgcode_split(raw)
+
+
+def test_bgcode_split_rejects_deflate_size_mismatch():
+    MAGIC = b"GCDE"
+    BLK_GCODE = 1
+    COMP_DEFLATE = 1
+    ENC_RAW = 0
+
+    file_hdr = MAGIC + struct.pack("<IH", 1, 1)
+    inflated = b"ABC"
+    compressed = zlib.compress(inflated)
+    # Declare wrong uncompressed size on purpose.
+    hdr = struct.pack("<HHI", BLK_GCODE, COMP_DEFLATE, 2) + struct.pack("<I", len(compressed))
+    params = struct.pack("<H", ENC_RAW)
+    cksum = zlib.crc32(hdr) & 0xFFFFFFFF
+    cksum = zlib.crc32(params, cksum) & 0xFFFFFFFF
+    cksum = zlib.crc32(compressed, cksum) & 0xFFFFFFFF
+    raw = file_hdr + hdr + params + compressed + struct.pack("<I", cksum)
+
+    with pytest.raises(ValueError, match="size mismatch"):
+        gl._bgcode_split(raw)
+
+
 # ---------------------------------------------------------------------------
 # _is_bgcode_file
 # ---------------------------------------------------------------------------

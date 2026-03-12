@@ -184,6 +184,10 @@ class TestPrusaLinkRequest:
         assert exc_info.value.status_code == 0
         assert "timed out" in exc_info.value.message.lower()
 
+    def test_invalid_url_wrapped_as_prusalink_error(self):
+        with pytest.raises(gl.PrusaLinkError, match="Invalid URL"):
+            gl._prusalink_request(BASE_URL, API_KEY, "GET", "/bad path")
+
 
 # ---------------------------------------------------------------------------
 # prusalink_get_version
@@ -405,3 +409,15 @@ class TestPrusaLinkUpload:
         headers = mock_req.call_args[1]["extra_headers"]
         assert "Content-Length" in headers
         assert int(headers["Content-Length"]) == len(b"G28\n")
+
+    @patch("gcode_lib._prusalink_request")
+    def test_upload_url_encodes_filename(self, mock_req, tmp_path):
+        mock_req.return_value = b""
+        gcode = tmp_path / "my file #1.gcode"
+        gcode.write_text("G28\n")
+
+        gl.prusalink_upload(BASE_URL, API_KEY, str(gcode))
+        path = mock_req.call_args[0][3]
+        assert " " not in path
+        assert "%20" in path
+        assert "%23" in path

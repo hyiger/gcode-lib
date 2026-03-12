@@ -379,6 +379,15 @@ class TestParseThumbnailSpecs:
             assert len(w) == 1
             assert "invalid thumbnail spec" in str(w[0].message).lower()
 
+    def test_non_positive_dimensions_warn_and_are_skipped(self):
+        with _warnings_mod.catch_warnings(record=True) as w:
+            _warnings_mod.simplefilter("always")
+            result = gl.parse_thumbnail_specs("0x16,-8x32,16x0,32x32")
+            assert len(result) == 1
+            assert result[0].width == 32
+            assert result[0].height == 32
+            assert len(w) == 3
+
 
 class TestFallbackPng:
     def test_returns_png_magic(self):

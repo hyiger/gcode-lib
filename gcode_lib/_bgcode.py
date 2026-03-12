@@ -19,6 +19,11 @@ from gcode_lib._types import GCodeFile, Thumbnail
 from gcode_lib._parsing import parse_lines
 
 
+# Hard cap for any single uncompressed block to avoid memory exhaustion on
+# malformed/untrusted files.
+_MAX_BGCODE_UNCOMPRESSED_BLOCK_SIZE = 256 * 1024 * 1024  # 256 MiB
+
+
 # ---------------------------------------------------------------------------
 # File detection
 # ---------------------------------------------------------------------------
@@ -75,7 +80,11 @@ def _heatshrink_decompress(
         remaining = count
         while remaining > 0:
             if bits_left == 0:
-                bit_buf = data[byte_pos] if byte_pos < input_len else 0
+                if byte_pos >= input_len:
+                    raise ValueError(
+                        "Heatshrink stream ended before expected output size was reached"
+                    )
+                bit_buf = data[byte_pos]
                 byte_pos += 1
                 bits_left = 8
             take = min(remaining, bits_left)
@@ -110,6 +119,42 @@ def _heatshrink_decompress(
                 out_pos += 1
 
     return bytes(output)
+
+
+# ---------------------------------------------------------------------------
+# Compression helpers
+# ---------------------------------------------------------------------------
+
+def _decompress_deflate_exact(
+    payload: bytes,
+    expected_size: int,
+    *,
+    offset: int,
+    block_desc: str,
+) -> bytes:
+    """DEFLATE-decompress a payload and enforce exact output size."""
+    try:
+        decomp = zlib.decompressobj()
+        out = decomp.decompress(payload, expected_size + 1)
+        # Non-empty tail means more output was needed than allowed.
+        if decomp.unconsumed_tail:
+            raise ValueError(
+                f"DEFLATE output for {block_desc} at offset {offset} "
+                f"exceeds advertised size {expected_size}"
+            )
+        out += decomp.flush()
+    except zlib.error as exc:
+        raise ValueError(
+            f"DEFLATE decompression failed for {block_desc} at offset {offset}: {exc}"
+        ) from exc
+
+    if len(out) != expected_size:
+        raise ValueError(
+            f"DEFLATE size mismatch for {block_desc} at offset {offset}: "
+            f"expected {expected_size}, got {len(out)}"
+        )
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +330,11 @@ def _bgcode_split(
 
         btype, comp = struct.unpack_from("<HH", data, pos)
         uncomp_size, = struct.unpack_from("<I", data, pos + 4)
+        if uncomp_size > _MAX_BGCODE_UNCOMPRESSED_BLOCK_SIZE:
+            raise ValueError(
+                f"Block at offset {pos} declares uncompressed size {uncomp_size}, "
+                f"which exceeds maximum {_MAX_BGCODE_UNCOMPRESSED_BLOCK_SIZE}"
+            )
 
         if comp == _COMP_NONE:
             comp_size = uncomp_size
@@ -325,12 +375,12 @@ def _bgcode_split(
             if comp == _COMP_NONE:
                 raw_payload = payload
             elif comp == _COMP_DEFLATE:
-                try:
-                    raw_payload = zlib.decompress(payload)
-                except zlib.error as exc:
-                    raise ValueError(
-                        f"DEFLATE decompression failed at offset {pos}: {exc}"
-                    ) from exc
+                raw_payload = _decompress_deflate_exact(
+                    payload,
+                    uncomp_size,
+                    offset=pos,
+                    block_desc="GCode block",
+                )
             elif comp == _COMP_HEATSHRINK_11_4:
                 raw_payload = _heatshrink_decompress(payload, 11, 4, uncomp_size)
             elif comp == _COMP_HEATSHRINK_12_4:
@@ -340,7 +390,12 @@ def _bgcode_split(
                     f"Unsupported GCode block compression {comp} at offset {pos}"
                 )
             if enc == _ENC_RAW:
-                gcode_parts.append(raw_payload.decode("utf-8"))
+                try:
+                    gcode_parts.append(raw_payload.decode("utf-8"))
+                except UnicodeDecodeError as exc:
+                    raise ValueError(
+                        f"Invalid UTF-8 in GCode block at offset {pos}: {exc}"
+                    ) from exc
             elif enc in (_ENC_MEATPACK, _ENC_MEATPACK_COMMENTS):
                 gcode_parts.append(_meatpack_decode(raw_payload))
             else:
@@ -353,12 +408,12 @@ def _bgcode_split(
             if comp == _COMP_NONE:
                 img_data = payload
             elif comp == _COMP_DEFLATE:
-                try:
-                    img_data = zlib.decompress(payload)
-                except zlib.error as exc:
-                    raise ValueError(
-                        f"DEFLATE decompression of thumbnail failed at offset {pos}: {exc}"
-                    ) from exc
+                img_data = _decompress_deflate_exact(
+                    payload,
+                    uncomp_size,
+                    offset=pos,
+                    block_desc="thumbnail block",
+                )
             elif comp == _COMP_HEATSHRINK_11_4:
                 img_data = _heatshrink_decompress(payload, 11, 4, uncomp_size)
             elif comp == _COMP_HEATSHRINK_12_4:

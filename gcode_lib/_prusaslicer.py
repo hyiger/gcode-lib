@@ -351,6 +351,12 @@ def slice_batch(
     def _do_one(inp: str) -> RunResult:
         stem = Path(inp).stem
         out_name = _render_template(naming, {"stem": stem})
+        if not out_name:
+            raise ValueError("naming template produced an empty filename")
+        if Path(out_name).is_absolute() or "/" in out_name or "\\" in out_name:
+            raise ValueError("naming must produce a filename, not a path")
+        if out_name in (".", ".."):
+            raise ValueError("naming must produce a normal filename")
         req = SliceRequest(
             input_path=inp,
             output_path=str(out_dir / out_name),

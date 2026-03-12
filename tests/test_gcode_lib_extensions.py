@@ -1035,3 +1035,23 @@ class TestSliceBatchEdgeCases:
                 config_ini=None,
             )
         assert results == []
+
+    def test_naming_with_path_separator_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="filename, not a path"):
+            gl.slice_batch(
+                exe="/fake/slicer",
+                inputs=["model.stl"],
+                output_dir=str(tmp_path),
+                config_ini=None,
+                naming="../{stem}.gcode",
+            )
+
+    def test_naming_with_absolute_path_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="filename, not a path"):
+            gl.slice_batch(
+                exe="/fake/slicer",
+                inputs=["model.stl"],
+                output_dir=str(tmp_path),
+                config_ini=None,
+                naming="/tmp/{stem}.gcode",
+            )
