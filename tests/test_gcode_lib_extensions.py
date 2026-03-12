@@ -829,6 +829,22 @@ class TestResolveMacosApp:
         # No executables inside
         assert _resolve_macos_app(str(app_dir)) is None
 
+    def test_accepts_pathlib_path(self, tmp_path):
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        app_dir = tmp_path / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        (macos_dir / "PrusaSlicer-console").touch()
+        # Pass a pathlib.Path directly (not str)
+        result = _resolve_macos_app(app_dir)
+        assert result is not None
+        assert result.endswith("PrusaSlicer-console")
+
+    def test_pathlike_non_app_returns_none(self):
+        from pathlib import Path
+        from gcode_lib._prusaslicer import _resolve_macos_app
+        assert _resolve_macos_app(Path("/usr/bin/prusa-slicer")) is None
+
 
 class TestFindPrusaSlicerExecutable:
     def test_explicit_path_not_found_raises(self):
@@ -856,6 +872,22 @@ class TestFindPrusaSlicerExecutable:
             explicit_path=str(app_dir) + "/",
         )
         assert result == str(console)
+
+    def test_explicit_pathlib_path(self, tmp_path):
+        """A pathlib.Path explicit_path works without AttributeError."""
+        exe = tmp_path / "prusa-slicer"
+        exe.touch()
+        result = gl.find_prusaslicer_executable(explicit_path=exe)
+        assert result == str(exe)
+
+    def test_explicit_pathlib_app_bundle(self, tmp_path):
+        """A pathlib.Path pointing to a .app bundle resolves correctly."""
+        app_dir = tmp_path / "PrusaSlicer.app"
+        macos_dir = app_dir / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        (macos_dir / "PrusaSlicer").touch()
+        result = gl.find_prusaslicer_executable(explicit_path=app_dir)
+        assert result.endswith("PrusaSlicer")
 
 
 # ===========================================================================
