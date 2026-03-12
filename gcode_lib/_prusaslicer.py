@@ -139,7 +139,7 @@ _PS_PATH_NAMES: List[str] = [
 # ---------------------------------------------------------------------------
 
 
-def _resolve_macos_app(path: str) -> Optional[str]:
+def _resolve_macos_app(path: "str | os.PathLike[str]") -> Optional[str]:
     """Resolve a macOS ``.app`` bundle path to the executable inside.
 
     If *path* points to a ``.app`` directory (with or without trailing
@@ -147,7 +147,7 @@ def _resolve_macos_app(path: str) -> Optional[str]:
     inside ``Contents/MacOS/``.  Returns ``None`` if *path* is not a
     ``.app`` bundle or no executable is found inside.
     """
-    clean = path.rstrip("/").rstrip("\\")
+    clean = os.fspath(path).rstrip("/").rstrip("\\")
     if not clean.endswith(".app"):
         return None
     if not os.path.isdir(clean):
@@ -162,7 +162,7 @@ def _resolve_macos_app(path: str) -> Optional[str]:
 
 def find_prusaslicer_executable(
     prefer_console: bool = True,
-    explicit_path: Optional[str] = None,
+    explicit_path: "Optional[str | os.PathLike[str]]" = None,
 ) -> str:
     """Locate the PrusaSlicer executable on the current machine.
 
@@ -177,6 +177,7 @@ def find_prusaslicer_executable(
     prefer_console: Prefer the ``PrusaSlicer-console`` / ``prusa-slicer-console``
                     variant (no GUI) when both are available.
     explicit_path:  Override all search logic with an exact path.
+                    Accepts ``str`` or ``pathlib.Path``.
 
     Raises
     ------
@@ -188,11 +189,12 @@ def find_prusaslicer_executable(
         resolved = _resolve_macos_app(explicit_path)
         if resolved is not None:
             return resolved
-        if not os.path.isfile(explicit_path):
+        explicit_str = os.fspath(explicit_path)
+        if not os.path.isfile(explicit_str):
             raise FileNotFoundError(
-                f"Explicit PrusaSlicer path not found: {explicit_path!r}"
+                f"Explicit PrusaSlicer path not found: {explicit_str!r}"
             )
-        return explicit_path
+        return explicit_str
 
     candidates: List[str] = []
 
