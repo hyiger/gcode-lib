@@ -65,6 +65,43 @@ gl.save(gf, "centred.gcode")
 
 Or use `recenter_to_bed()` for a one-call equivalent — see [Bed placement and validation](bed-placement.md).
 
+## Print time and filament estimation
+
+`estimate_print()` estimates total print time and filament usage (length and weight):
+
+```python
+gf = gl.load("print.gcode")
+est = gl.estimate_print(gf.lines)
+
+print(f"Print time: {est.time_hms}")              # e.g. "1h23m45s"
+print(f"Time (seconds): {est.time_seconds:.0f}")
+print(f"Filament: {est.filament_length_m:.2f} m")
+print(f"Weight: {est.filament_weight_g:.1f} g")
+```
+
+Filament type is auto-detected from PrusaSlicer comments (`; filament_type = ...`) in the
+G-code.  If not found, PLA is assumed.  You can override:
+
+```python
+# Explicit filament type (uses density from FILAMENT_PRESETS)
+est = gl.estimate_print(gf.lines, filament_type="PETG")
+
+# Explicit density override (g/cm³) — ignores filament type
+est = gl.estimate_print(gf.lines, filament_density=1.30)
+
+# Non-standard filament diameter
+est = gl.estimate_print(gf.lines, filament_diameter=2.85)
+```
+
+### Detecting filament type
+
+`detect_filament_type()` scans G-code comments for the filament type:
+
+```python
+filament = gl.detect_filament_type(gf.lines)
+print(filament)   # e.g. "PETG", "PLA", or None
+```
+
 ## Layer iteration
 
 `iter_layers()` groups lines by Z height, yielding each layer as a `(z_height, [lines])` pair:

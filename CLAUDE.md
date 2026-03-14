@@ -48,6 +48,7 @@ tests/
 | `GCodeFile` | Top-level container: `.lines`, `.thumbnails`, `.source_format` |
 | `Bounds` | XY/Z bounding box; `.valid`, `.width`, `.height`, `.center_x`, `.center_y` |
 | `GCodeStats` | Computed stats: move/arc/travel counts, feedrates, z_heights, bounds, `.layer_count` |
+| `PrintEstimate` | Estimated print time and filament usage: `.time_seconds`, `.time_hms`, `.filament_length_m`, `.filament_weight_g` |
 | `Thumbnail` | Image from .bgcode or plain-text; `.width`, `.height`, `.format_code` |
 | `OOBHit` | Out-of-bounds result: `.line_number`, `.x`, `.y`, `.distance_outside` |
 | `PrusaSlicerCapabilities` | Detected slicer flags: `.version_text`, `.has_export_gcode`, … |
@@ -98,6 +99,7 @@ being modified.  Pass `skip_negative_y=False` to transform all moves.
 ### Statistics
 - `compute_bounds(lines, extruding_only, include_arcs, skip_negative_y=False)` → `Bounds`
 - `compute_stats(lines)` → `GCodeStats`
+- `estimate_print(lines, filament_type, filament_diameter, filament_density)` → `PrintEstimate` — estimated print time, filament length (m), and weight (g); auto-detects filament type from `; filament_type` comments
 - `analyze_xy_transform(lines, fn)` → `dict` — dry-run: max_dx, max_dy, max_displacement, line_number, move_count
 
 ### Bed / placement helpers
@@ -154,9 +156,10 @@ being modified.  Pass `skip_negative_y=False` to transform all moves.
 - `safe_filename_part(value)` → `str` — sanitise for filename
 
 ### Presets
-- `PRINTER_PRESETS` — dict of `{name: {bed_x, bed_y, max_z}}` (COREONE, COREONEL, MK4, MK3S, MINI, XL)
-- `FILAMENT_PRESETS` — dict of `{name: {hotend, bed, fan, retract, temp_min, temp_max, speed, enclosure}}` (PLA, PETG, ASA, TPU, ABS, PA, PC, PCTG, PP, PPA, HIPS, PLA-CF, PETG-CF, PA-CF)
+- `PRINTER_PRESETS` — dict of `{name: {bed_x, bed_y, max_z, max_nozzle_temp, max_bed_temp}}` (COREONE, COREONEL, MK4, MK3S, MINI, XL)
+- `FILAMENT_PRESETS` — dict of `{name: {hotend, bed, fan, retract, temp_min, temp_max, speed, enclosure, density}}` (PLA, PETG, ASA, TPU, ABS, PA, PC, PCTG, PP, PPA, HIPS, PLA-CF, PETG-CF, PA-CF)
 - `detect_printer_preset(lines)` → `Optional[str]` — detect preset name from `M862.3 P` command in G-code
+- `detect_filament_type(lines)` → `Optional[str]` — detect filament type from `; filament_type` comment in G-code
 - `detect_print_volume(lines)` → `Optional[Dict[str, float]]` — detect print volume (`bed_x`, `bed_y`, `max_z`) from G-code
 
 ### PrusaSlicer CLI helpers

@@ -16,8 +16,8 @@
 
 | Name | Type | Description |
 |---|---|---|
-| `PRINTER_PRESETS` | `Dict[str, Dict]` | Bed and Z dimensions for Prusa printers (`COREONE`, `COREONEL`, `MK4`, `MK3S`, `MINI`, `XL`) |
-| `FILAMENT_PRESETS` | `Dict[str, Dict]` | Hotend/bed temperatures, retraction, speed, and enclosure flag for common materials (`PLA`, `PETG`, `ASA`, `TPU`, `ABS`, `PA`, `PC`, `PCTG`, `PP`, `PPA`, `HIPS`, `PLA-CF`, `PETG-CF`, `PA-CF`) |
+| `PRINTER_PRESETS` | `Dict[str, Dict]` | Bed/Z dimensions and max temperatures for Prusa printers (`COREONE`, `COREONEL`, `MK4`, `MK3S`, `MINI`, `XL`) |
+| `FILAMENT_PRESETS` | `Dict[str, Dict]` | Hotend/bed temperatures, retraction, speed, density, and enclosure flag for common materials (`PLA`, `PETG`, `ASA`, `TPU`, `ABS`, `PA`, `PC`, `PCTG`, `PP`, `PPA`, `HIPS`, `PLA-CF`, `PETG-CF`, `PA-CF`) |
 
 ## Data classes
 
@@ -83,6 +83,15 @@
 | `z_heights` | Unique Z values in order seen |
 | `feedrates` | Unique F values in order seen |
 | `layer_count` | `len(z_heights)` |
+
+### `PrintEstimate`
+
+| Attribute | Type | Description |
+|---|---|---|
+| `time_seconds` | `float` | Estimated print time in seconds |
+| `filament_length_m` | `float` | Total filament length in metres |
+| `filament_weight_g` | `float` | Total filament weight in grams |
+| `time_hms` | `str` (property) | Human-readable time, e.g. `"1h23m45s"`, `"5m12s"`, `"30s"` |
 
 ### `Thumbnail`
 
@@ -251,6 +260,10 @@ compute_bounds(lines, extruding_only=False, include_arcs=True,
                initial_state=None) -> Bounds
 
 compute_stats(lines, initial_state=None) -> GCodeStats
+
+estimate_print(lines, filament_type=None, filament_diameter=1.75,
+               filament_density=None,
+               initial_state=None) -> PrintEstimate
 ```
 
 ### Layer iteration
@@ -283,10 +296,12 @@ Return keys: `max_dx`, `max_dy`, `max_displacement`, `line_number`, `move_count`
 ```
 detect_printer_preset(lines: List[GCodeLine]) -> Optional[str]
 detect_print_volume(lines: List[GCodeLine]) -> Optional[Dict[str, float]]
+detect_filament_type(lines: List[GCodeLine]) -> Optional[str]
 ```
 
 `detect_printer_preset` scans for `M862.3 P "..."` and returns the matching `PRINTER_PRESETS` key (e.g. `"COREONE"`) or `None`.
 `detect_print_volume` returns the matching preset's bed dimensions (`bed_x`, `bed_y`, `max_z`) as a dict, or `None`.
+`detect_filament_type` scans for `; filament_type = ...` comments and returns the filament type string (e.g. `"PETG"`) or `None`.
 
 ### Template and thumbnail
 

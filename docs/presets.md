@@ -14,14 +14,14 @@ p = gl.PRINTER_PRESETS["MK4"]
 print(p["bed_x"], p["bed_y"], p["max_z"])   # 250.0  210.0  220.0
 ```
 
-| Key | `bed_x` mm | `bed_y` mm | `max_z` mm |
-|---|---|---|---|
-| `COREONE` | 250.0 | 220.0 | 250.0 |
-| `COREONEL` | 300.0 | 300.0 | 330.0 |
-| `MK4` | 250.0 | 210.0 | 220.0 |
-| `MK3S` | 250.0 | 210.0 | 210.0 |
-| `MINI` | 180.0 | 180.0 | 180.0 |
-| `XL` | 360.0 | 360.0 | 360.0 |
+| Key | `bed_x` mm | `bed_y` mm | `max_z` mm | `max_nozzle_temp` °C | `max_bed_temp` °C |
+|---|---|---|---|---|---|
+| `COREONE` | 250.0 | 220.0 | 250.0 | 290 | 120 |
+| `COREONEL` | 300.0 | 300.0 | 330.0 | 290 | 120 |
+| `MK4` | 250.0 | 210.0 | 220.0 | 290 | 120 |
+| `MK3S` | 250.0 | 210.0 | 210.0 | 290 | 120 |
+| `MINI` | 180.0 | 180.0 | 180.0 | 280 | 100 |
+| `XL` | 360.0 | 360.0 | 360.0 | 290 | 120 |
 
 ## Filament presets
 
@@ -34,24 +34,25 @@ print(f["hotend"], f["bed"], f["fan"], f["retract"])
 # 215  60  100  0.8
 ```
 
-| Key | `hotend` °C | `bed` °C | `fan` % | `retract` mm | `speed` mm/s | `enclosure` |
-|---|---|---|---|---|---|---|
-| `PLA` | 215 | 60 | 100 | 0.8 | 60 | No |
-| `PETG` | 240 | 80 | 40 | 0.8 | 50 | No |
-| `ASA` | 260 | 100 | 20 | 0.8 | 45 | Yes |
-| `TPU` | 230 | 50 | 50 | 1.5 | 25 | No |
-| `ABS` | 255 | 100 | 20 | 0.8 | 45 | Yes |
-| `PA` | 260 | 80 | 30 | 1.0 | 40 | Yes |
-| `PC` | 275 | 110 | 20 | 0.8 | 40 | Yes |
-| `PCTG` | 250 | 80 | 50 | 0.8 | 50 | No |
-| `PP` | 240 | 85 | 30 | 1.2 | 35 | Yes |
-| `PPA` | 280 | 100 | 20 | 0.8 | 40 | Yes |
-| `HIPS` | 230 | 100 | 20 | 0.8 | 45 | Yes |
-| `PLA-CF` | 220 | 60 | 100 | 0.8 | 50 | No |
-| `PETG-CF` | 250 | 80 | 30 | 0.8 | 45 | No |
-| `PA-CF` | 270 | 80 | 20 | 1.0 | 40 | Yes |
+| Key | `hotend` °C | `bed` °C | `fan` % | `retract` mm | `speed` mm/s | `density` g/cm³ | `enclosure` |
+|---|---|---|---|---|---|---|---|
+| `PLA` | 215 | 60 | 100 | 0.8 | 60 | 1.24 | No |
+| `PETG` | 240 | 80 | 40 | 0.8 | 50 | 1.27 | No |
+| `ASA` | 260 | 100 | 20 | 0.8 | 45 | 1.07 | Yes |
+| `TPU` | 230 | 50 | 50 | 1.5 | 25 | 1.21 | No |
+| `ABS` | 255 | 100 | 20 | 0.8 | 45 | 1.04 | Yes |
+| `PA` | 260 | 80 | 30 | 1.0 | 40 | 1.14 | Yes |
+| `PC` | 275 | 110 | 20 | 0.8 | 40 | 1.20 | Yes |
+| `PCTG` | 250 | 80 | 50 | 0.8 | 50 | 1.27 | No |
+| `PP` | 240 | 85 | 30 | 1.2 | 35 | 0.90 | Yes |
+| `PPA` | 280 | 100 | 20 | 0.8 | 40 | 1.14 | Yes |
+| `HIPS` | 230 | 100 | 20 | 0.8 | 45 | 1.05 | Yes |
+| `PLA-CF` | 220 | 60 | 100 | 0.8 | 50 | 1.29 | No |
+| `PETG-CF` | 250 | 80 | 30 | 0.8 | 45 | 1.32 | No |
+| `PA-CF` | 270 | 80 | 20 | 1.0 | 40 | 1.19 | Yes |
 
-Each preset also includes `temp_min` and `temp_max` (°C) for safe temperature range validation.
+Each preset also includes `temp_min` and `temp_max` (°C) for safe temperature range validation, and
+`density` (g/cm³) used by `estimate_print()` for filament weight calculation.
 
 ## Using presets for bed operations
 
@@ -86,6 +87,20 @@ vol = gl.detect_print_volume(gf.lines)
 if vol:
     print(vol)   # {"bed_x": 250.0, "bed_y": 220.0, "max_z": 250.0}
 ```
+
+## Auto-detecting filament type from G-code
+
+PrusaSlicer embeds `; filament_type = PLA` (or PETG, ASA, etc.) comments in the G-code.
+`detect_filament_type()` scans for this and returns the type string, or `None` if not found.
+
+```python
+gf = gl.load("print.gcode")
+filament = gl.detect_filament_type(gf.lines)
+print(filament)   # e.g. "PETG", "PLA", or None
+```
+
+This is used automatically by `estimate_print()` to select the correct filament density for
+weight calculation — see [Statistics](statistics.md#print-time-and-filament-estimation).
 
 ## Resolving filament presets
 
