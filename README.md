@@ -48,6 +48,11 @@ bounds = stats.bounds
 print(f"Print size: {bounds.width:.1f} x {bounds.height:.1f} mm")
 print(f"Centred at: ({bounds.center_x:.1f}, {bounds.center_y:.1f})")
 
+# Estimate print time and filament usage (auto-detects filament type from G-code)
+est = gl.estimate_print(gf.lines)
+print(f"Print time: {est.time_hms}")
+print(f"Filament: {est.filament_length_m:.2f} m / {est.filament_weight_g:.1f} g")
+
 # Shift the print 10 mm to the right, 5 mm forward (arc-safe, no linearization needed)
 lines = gl.translate_xy_allow_arcs(gf.lines, dx=10.0, dy=5.0)
 gf.lines = lines
@@ -63,7 +68,7 @@ gl.save(gf, "benchy_shifted.gcode")
 - **[State tracking](docs/state-tracking.md)** — `ModalState`, `advance_state()`, iterators for moves, arcs, and extruding segments
 - **[Transforms](docs/transforms.md)** — arc linearization, translate, rotate, skew, arbitrary XY transform, layer-selective transforms, G91→G90 conversion, transform analysis
 - **[Bed placement](docs/bed-placement.md)** — out-of-bounds detection, recenter/fit to bed
-- **[Statistics](docs/statistics.md)** — bounding box, move/arc/travel counts, layer iteration
+- **[Statistics](docs/statistics.md)** — bounding box, move/arc/travel counts, layer iteration, print time and filament usage estimation
 - **[Presets](docs/presets.md)** — printer bed dimensions and filament parameters for Prusa printers, auto-detection from G-code
 - **[Utilities](docs/utilities.md)** — template rendering, thumbnail encoding
 - **[Binary .bgcode](docs/binary-bgcode.md)** — full BGCode read support (None/DEFLATE/Heatshrink + MeatPack) and BGCode v2 writing
