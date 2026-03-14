@@ -86,6 +86,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 230,
         "speed": 60,
         "enclosure": False,
+        "density": 1.24,
     },
     "PETG": {
         "hotend": 240,
@@ -96,6 +97,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 260,
         "speed": 50,
         "enclosure": False,
+        "density": 1.27,
     },
     "ASA": {
         "hotend": 260,
@@ -106,6 +108,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 280,
         "speed": 45,
         "enclosure": True,
+        "density": 1.07,
     },
     "TPU": {
         "hotend": 230,
@@ -116,6 +119,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 250,
         "speed": 25,
         "enclosure": False,
+        "density": 1.21,
     },
     "ABS": {
         "hotend": 255,
@@ -126,6 +130,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 270,
         "speed": 45,
         "enclosure": True,
+        "density": 1.04,
     },
     "PA": {
         "hotend": 260,
@@ -136,6 +141,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 280,
         "speed": 40,
         "enclosure": True,
+        "density": 1.14,
     },
     "PC": {
         "hotend": 275,
@@ -146,6 +152,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 300,
         "speed": 40,
         "enclosure": True,
+        "density": 1.20,
     },
     "PCTG": {
         "hotend": 250,
@@ -156,6 +163,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 270,
         "speed": 50,
         "enclosure": False,
+        "density": 1.27,
     },
     "PP": {
         "hotend": 240,
@@ -166,6 +174,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 260,
         "speed": 35,
         "enclosure": True,
+        "density": 0.90,
     },
     "PPA": {
         "hotend": 280,
@@ -176,6 +185,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 310,
         "speed": 40,
         "enclosure": True,
+        "density": 1.14,
     },
     "HIPS": {
         "hotend": 230,
@@ -186,6 +196,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 250,
         "speed": 45,
         "enclosure": True,
+        "density": 1.05,
     },
     "PLA-CF": {
         "hotend": 220,
@@ -196,6 +207,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 240,
         "speed": 50,
         "enclosure": False,
+        "density": 1.29,
     },
     "PETG-CF": {
         "hotend": 250,
@@ -206,6 +218,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 270,
         "speed": 45,
         "enclosure": False,
+        "density": 1.32,
     },
     "PA-CF": {
         "hotend": 270,
@@ -216,6 +229,7 @@ FILAMENT_PRESETS: Dict[str, Dict[str, object]] = {
         "temp_max": 290,
         "speed": 40,
         "enclosure": True,
+        "density": 1.19,
     },
 }
 
