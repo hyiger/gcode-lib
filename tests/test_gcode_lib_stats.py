@@ -447,3 +447,76 @@ def test_estimate_print_falls_back_to_pla():
     est = gl.estimate_print(lines)
     expected_weight = 2.0 * math.pi * (1.75 / 2) ** 2 * 1.24 / 1000.0
     assert est.filament_weight_g == pytest.approx(expected_weight)
+
+
+def test_estimate_print_retract_adds_time():
+    """E-only retraction/priming moves contribute to print time."""
+    # Retract 0.8mm at F1800 (30mm/s) then prime back
+    lines = gl.parse_lines(
+        "G90\nM82\nG1 X10 E1.0 F600\n"
+        "G1 E0.2 F1800\n"       # retract 0.8mm
+        "G1 E1.0 F1800\n"       # prime 0.8mm
+        "G1 X20 E2.0 F600"
+    )
+    est = gl.estimate_print(lines)
+    # XY time: 10/600 + 10/600 = 2s
+    # E-only time: 0.8/1800 + 0.8/1800 (in minutes) * 60
+    e_time = (0.8 / 1800 + 0.8 / 1800) * 60.0
+    assert est.time_seconds == pytest.approx(2.0 + e_time)
+
+
+def test_estimate_print_retract_no_extra_filament():
+    """Retract/unretract pair does not inflate filament usage."""
+    # Extrude 1mm, retract 0.8mm, unretract 0.8mm, extrude 1mm more
+    lines = gl.parse_lines(
+        "G90\nM82\n"
+        "G1 X10 E1.0 F600\n"   # extrude 1mm
+        "G1 E0.2 F1800\n"      # retract 0.8mm (E goes down)
+        "G1 E1.0 F1800\n"      # unretract back to 1.0
+        "G1 X20 E2.0 F600"     # extrude 1mm more
+    )
+    est = gl.estimate_print(lines)
+    # Net filament consumed = 2.0mm (final E), not 2.8mm
+    assert est.filament_length_m == pytest.approx(0.002)
+
+
+def test_estimate_print_retract_relative_no_extra_filament():
+    """Retract/unretract in M83 relative mode doesn't inflate usage."""
+    lines = gl.parse_lines(
+        "G90\nM83\n"
+        "G1 X10 E1.0 F600\n"   # extrude 1mm
+        "G1 E-0.8 F1800\n"     # retract
+        "G1 E0.8 F1800\n"      # unretract
+        "G1 X20 E1.0 F600"     # extrude 1mm more
+    )
+    est = gl.estimate_print(lines)
+    # Net filament = 1.0 + 1.0 = 2.0mm
+    assert est.filament_length_m == pytest.approx(0.002)
+
+
+def test_estimate_print_g92_e_reset():
+    """G92 E0 resets don't break net extrusion tracking."""
+    lines = gl.parse_lines(
+        "G90\nM82\n"
+        "G1 X10 E5.0 F600\n"   # extrude 5mm
+        "G92 E0\n"             # reset E to 0
+        "G1 X20 E3.0 F600"    # extrude 3mm more
+    )
+    est = gl.estimate_print(lines)
+    # Net filament = 5 + 3 = 8mm
+    assert est.filament_length_m == pytest.approx(0.008)
+
+
+def test_estimate_print_g92_e_reset_with_retract():
+    """G92 E0 after retraction preserves retraction state."""
+    lines = gl.parse_lines(
+        "G90\nM82\n"
+        "G1 X10 E5.0 F600\n"   # extrude 5mm
+        "G1 E4.2 F1800\n"      # retract 0.8mm
+        "G92 E0\n"             # reset E to 0
+        "G1 E0.8 F1800\n"      # unretract 0.8mm
+        "G1 X20 E3.0 F600"    # extrude 2.2mm more
+    )
+    est = gl.estimate_print(lines)
+    # Net filament = 5 + 2.2 = 7.2mm (retract/unretract cancels)
+    assert est.filament_length_m == pytest.approx(0.0072)

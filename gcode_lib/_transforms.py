@@ -474,6 +474,7 @@ def estimate_print(
     state = initial_state.copy() if initial_state else ModalState()
     total_time_min = 0.0
     total_extrusion_mm = 0.0
+    e_hwm = state.e  # high-water mark for net extrusion tracking
 
     for line in lines:
         if line.is_move:
@@ -497,19 +498,29 @@ def estimate_print(
                 (x1 - state.x) ** 2 + (y1 - state.y) ** 2 + (z1 - state.z) ** 2
             )
 
-            # Accumulate time (F is mm/min)
-            if f is not None and f > 0 and dist > 0:
-                total_time_min += dist / f
-
-            # Accumulate extrusion
+            # Compute E delta for time and extrusion
+            dE = 0.0
             if "E" in words:
                 e_word = words["E"]
                 if state.abs_e:
                     dE = e_word - state.e
+                    new_e = e_word
                 else:
                     dE = e_word
-                if dE > 0:
-                    total_extrusion_mm += dE
+                    new_e = state.e + e_word
+
+            # Accumulate time (F is mm/min)
+            if f is not None and f > 0:
+                if dist > 0:
+                    total_time_min += dist / f
+                elif dE != 0.0:
+                    # E-only moves (retractions/priming)
+                    total_time_min += abs(dE) / f
+
+            # Accumulate extrusion via high-water mark (net consumption)
+            if "E" in words and new_e > e_hwm:
+                total_extrusion_mm += new_e - e_hwm
+                e_hwm = new_e
 
         elif line.is_arc:
             words = line.words
@@ -537,15 +548,21 @@ def estimate_print(
             if f is not None and f > 0 and arc_dist > 0:
                 total_time_min += arc_dist / f
 
-            # Accumulate extrusion
+            # Accumulate extrusion via high-water mark
             if "E" in words:
                 e_word = words["E"]
                 if state.abs_e:
-                    dE = e_word - state.e
+                    new_e = e_word
                 else:
-                    dE = e_word
-                if dE > 0:
-                    total_extrusion_mm += dE
+                    new_e = state.e + e_word
+                if new_e > e_hwm:
+                    total_extrusion_mm += new_e - e_hwm
+                    e_hwm = new_e
+
+        # Adjust high-water mark on G92 E resets (coordinate shift, not
+        # physical filament movement)
+        if line.command == "G92" and "E" in line.words:
+            e_hwm += line.words["E"] - state.e
 
         advance_state(state, line)
 
