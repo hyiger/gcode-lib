@@ -438,7 +438,7 @@ _DEFAULT_FILAMENT_DENSITY = 1.24  # PLA, g/cm³
 
 def estimate_print(
     lines: List[GCodeLine],
-    filament_type: str = "PLA",
+    filament_type: Optional[str] = None,
     filament_diameter: float = 1.75,
     filament_density: Optional[float] = None,
     initial_state: Optional[ModalState] = None,
@@ -448,7 +448,10 @@ def estimate_print(
     Parameters
     ----------
     lines:             Parsed G-code lines.
-    filament_type:     Filament preset name for density lookup (default ``"PLA"``).
+    filament_type:     Filament preset name for density lookup.  When ``None``
+                       (the default), the type is auto-detected from a
+                       ``; filament_type = X`` comment in *lines*, falling back
+                       to ``"PLA"`` if not found.
     filament_diameter: Filament diameter in mm (default 1.75).
     filament_density:  Explicit density in g/cm³; overrides *filament_type* lookup.
     initial_state:     Optional starting modal state.
@@ -458,11 +461,13 @@ def estimate_print(
     PrintEstimate
         Estimated time (seconds), filament length (metres), and weight (grams).
     """
-    # Resolve density: explicit > preset lookup > PLA default
+    # Resolve density: explicit > preset lookup (auto-detect type) > PLA default
     if filament_density is not None:
         density = filament_density
     else:
-        from gcode_lib._presets import FILAMENT_PRESETS
+        from gcode_lib._presets import FILAMENT_PRESETS, detect_filament_type
+        if filament_type is None:
+            filament_type = detect_filament_type(lines) or "PLA"
         preset = FILAMENT_PRESETS.get(filament_type.upper())
         density = float(preset["density"]) if preset and "density" in preset else _DEFAULT_FILAMENT_DENSITY
 

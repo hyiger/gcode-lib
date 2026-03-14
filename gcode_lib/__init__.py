@@ -195,6 +195,7 @@ from gcode_lib._presets import (
     compute_bed_shape,
     compute_m555,
     derive_slicer_dimensions,
+    detect_filament_type,
     detect_print_volume,
     detect_printer_preset,
     flow_to_feedrate,

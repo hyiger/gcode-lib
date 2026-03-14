@@ -400,3 +400,50 @@ def test_estimate_print_time_hms_seconds_only():
 def test_estimate_print_time_hms_zero():
     est = gl.PrintEstimate(time_seconds=0)
     assert est.time_hms == "0s"
+
+
+# ===========================================================================
+# detect_filament_type
+# ===========================================================================
+
+
+def test_detect_filament_type_found():
+    lines = gl.parse_lines("; filament_type = PETG\nG90\nG1 X10 F600")
+    assert gl.detect_filament_type(lines) == "PETG"
+
+
+def test_detect_filament_type_not_found():
+    lines = gl.parse_lines("G90\nG1 X10 F600")
+    assert gl.detect_filament_type(lines) is None
+
+
+def test_detect_filament_type_case_insensitive_key():
+    lines = gl.parse_lines("; Filament_Type = ASA\nG90")
+    assert gl.detect_filament_type(lines) == "ASA"
+
+
+def test_estimate_print_auto_detects_filament_type():
+    """estimate_print auto-detects filament type from G-code comments."""
+    import math
+    lines = gl.parse_lines("; filament_type = PETG\nG90\nM82\nG1 X10 E2.0 F600")
+    est = gl.estimate_print(lines)  # no filament_type arg
+    expected_weight = 2.0 * math.pi * (1.75 / 2) ** 2 * 1.27 / 1000.0
+    assert est.filament_weight_g == pytest.approx(expected_weight)
+
+
+def test_estimate_print_explicit_type_overrides_auto():
+    """Explicit filament_type overrides auto-detection."""
+    import math
+    lines = gl.parse_lines("; filament_type = PETG\nG90\nM82\nG1 X10 E2.0 F600")
+    est = gl.estimate_print(lines, filament_type="PLA")
+    expected_weight = 2.0 * math.pi * (1.75 / 2) ** 2 * 1.24 / 1000.0
+    assert est.filament_weight_g == pytest.approx(expected_weight)
+
+
+def test_estimate_print_falls_back_to_pla():
+    """Without comment or explicit type, defaults to PLA density."""
+    import math
+    lines = gl.parse_lines("G90\nM82\nG1 X10 E2.0 F600")
+    est = gl.estimate_print(lines)
+    expected_weight = 2.0 * math.pi * (1.75 / 2) ** 2 * 1.24 / 1000.0
+    assert est.filament_weight_g == pytest.approx(expected_weight)

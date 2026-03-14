@@ -254,6 +254,27 @@ def detect_printer_preset(lines: List[GCodeLine]) -> Optional[str]:
     return None
 
 
+_FILAMENT_TYPE_RE = re.compile(
+    r"^;\s*filament_type\s*=\s*(\S+)",
+    re.IGNORECASE,
+)
+
+
+def detect_filament_type(lines: List[GCodeLine]) -> Optional[str]:
+    """Detect the filament type from a ``; filament_type = X`` comment in *lines*.
+
+    Returns the filament type string (e.g. ``"PLA"``, ``"PETG"``) or ``None``
+    if no such comment is found.
+    """
+    for line in lines:
+        if not line.comment:
+            continue
+        m = _FILAMENT_TYPE_RE.match(line.raw.strip())
+        if m:
+            return m.group(1).strip()
+    return None
+
+
 def detect_print_volume(lines: List[GCodeLine]) -> Optional[Dict[str, float]]:
     """Detect the print volume from an ``M862.3 P`` line in *lines*."""
     name = detect_printer_preset(lines)
