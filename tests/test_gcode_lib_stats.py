@@ -291,3 +291,112 @@ def test_compute_stats_arc_z_duplicate_not_added():
     lines = gl.parse_lines("G90\nG1 X10 Y0 Z2\nG3 X0 Y10 I-10 J0 Z2")
     stats = gl.compute_stats(lines)
     assert stats.z_heights.count(2.0) == 1
+
+
+# ===========================================================================
+# estimate_print
+# ===========================================================================
+
+
+def test_estimate_print_basic():
+    """Known move at known feedrate gives correct time, length, and weight."""
+    # Move 10mm in X at F600 (10mm/s) with 2mm extrusion
+    lines = gl.parse_lines("G90\nM82\nG1 X10 E2.0 F600")
+    est = gl.estimate_print(lines)
+    # Time: 10mm / 600 mm/min = 1/60 min = 1 second
+    assert est.time_seconds == pytest.approx(1.0)
+    # Filament length: 2.0mm = 0.002m
+    assert est.filament_length_m == pytest.approx(0.002)
+    # Weight: 2.0mm * pi*(1.75/2)^2 mm² * 1.24 g/cm³ / 1000
+    import math
+    expected_weight = 2.0 * math.pi * (1.75 / 2) ** 2 * 1.24 / 1000.0
+    assert est.filament_weight_g == pytest.approx(expected_weight)
+
+
+def test_estimate_print_filament_type_petg():
+    """Passing filament_type='PETG' uses PETG density."""
+    lines = gl.parse_lines("G90\nM82\nG1 X10 E2.0 F600")
+    est = gl.estimate_print(lines, filament_type="PETG")
+    import math
+    expected_weight = 2.0 * math.pi * (1.75 / 2) ** 2 * 1.27 / 1000.0
+    assert est.filament_weight_g == pytest.approx(expected_weight)
+
+
+def test_estimate_print_explicit_density_overrides_type():
+    """Explicit filament_density takes precedence over filament_type."""
+    lines = gl.parse_lines("G90\nM82\nG1 X10 E2.0 F600")
+    est = gl.estimate_print(lines, filament_type="PLA", filament_density=1.30)
+    import math
+    expected_weight = 2.0 * math.pi * (1.75 / 2) ** 2 * 1.30 / 1000.0
+    assert est.filament_weight_g == pytest.approx(expected_weight)
+
+
+def test_estimate_print_custom_diameter():
+    """Custom filament diameter affects weight calculation."""
+    lines = gl.parse_lines("G90\nM82\nG1 X10 E2.0 F600")
+    est_175 = gl.estimate_print(lines, filament_diameter=1.75)
+    est_285 = gl.estimate_print(lines, filament_diameter=2.85)
+    # 2.85mm diameter should give heavier weight than 1.75mm
+    assert est_285.filament_weight_g > est_175.filament_weight_g
+
+
+def test_estimate_print_no_feedrate():
+    """Moves without any feedrate set contribute zero time."""
+    lines = gl.parse_lines("G90\nM82\nG1 X10 E1.0")
+    est = gl.estimate_print(lines)
+    assert est.time_seconds == pytest.approx(0.0)
+    assert est.filament_length_m == pytest.approx(0.001)
+
+
+def test_estimate_print_travel_only():
+    """Travel-only G-code has zero filament usage."""
+    lines = gl.parse_lines("G90\nG0 X50 Y50 F3000\nG0 X100 Y100")
+    est = gl.estimate_print(lines)
+    assert est.filament_length_m == pytest.approx(0.0)
+    assert est.filament_weight_g == pytest.approx(0.0)
+    assert est.time_seconds > 0
+
+
+def test_estimate_print_arc():
+    """G2/G3 arcs contribute to time estimate."""
+    lines = gl.parse_lines("G90\nM82\nG1 X10 Y0 F600\nG3 X0 Y10 I-10 J0 E1.0")
+    est = gl.estimate_print(lines)
+    # Arc should contribute meaningful time and extrusion
+    assert est.time_seconds > 0
+    assert est.filament_length_m == pytest.approx(0.001)
+
+
+def test_estimate_print_relative_extrusion():
+    """Relative extrusion mode (M83) is handled correctly."""
+    lines = gl.parse_lines("G90\nM83\nG1 X10 E0.5 F600\nG1 X20 E0.3")
+    est = gl.estimate_print(lines)
+    assert est.filament_length_m == pytest.approx(0.0008)
+
+
+def test_estimate_print_multiple_moves():
+    """Multiple moves accumulate time correctly."""
+    # Two 10mm moves at F600 = 2 seconds total
+    lines = gl.parse_lines("G90\nM82\nG1 X10 F600\nG1 X20")
+    est = gl.estimate_print(lines)
+    assert est.time_seconds == pytest.approx(2.0)
+
+
+def test_estimate_print_time_hms():
+    """time_hms property formats correctly."""
+    est = gl.PrintEstimate(time_seconds=5 * 3600 + 20 * 60 + 17)
+    assert est.time_hms == "5h20m17s"
+
+
+def test_estimate_print_time_hms_minutes_only():
+    est = gl.PrintEstimate(time_seconds=3 * 60 + 45)
+    assert est.time_hms == "3m45s"
+
+
+def test_estimate_print_time_hms_seconds_only():
+    est = gl.PrintEstimate(time_seconds=42)
+    assert est.time_hms == "42s"
+
+
+def test_estimate_print_time_hms_zero():
+    est = gl.PrintEstimate(time_seconds=0)
+    assert est.time_hms == "0s"

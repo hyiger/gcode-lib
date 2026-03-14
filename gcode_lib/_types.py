@@ -191,6 +191,33 @@ class GCodeStats:
 
 
 @dataclass
+class PrintEstimate:
+    """Estimated print time and filament usage.
+
+    Attributes
+    ----------
+    time_seconds:      Estimated total print time in seconds.
+    filament_length_m: Total filament consumed in metres.
+    filament_weight_g: Total filament consumed in grams.
+    """
+    time_seconds: float = 0.0
+    filament_length_m: float = 0.0
+    filament_weight_g: float = 0.0
+
+    @property
+    def time_hms(self) -> str:
+        """Format *time_seconds* as ``'XhYmZs'`` (e.g. ``'5h20m17s'``)."""
+        total = int(self.time_seconds)
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}h{m}m{s}s"
+        if m:
+            return f"{m}m{s}s"
+        return f"{s}s"
+
+
+@dataclass
 class OOBHit:
     """A move endpoint that lies outside the allowed bed polygon.
 

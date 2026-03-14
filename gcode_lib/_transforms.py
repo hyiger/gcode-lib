@@ -13,7 +13,7 @@ from gcode_lib._constants import (
     DEFAULT_XY_DECIMALS,
     EPS,
 )
-from gcode_lib._types import Bounds, GCodeLine, GCodeStats, ModalState
+from gcode_lib._types import Bounds, GCodeLine, GCodeStats, ModalState, PrintEstimate
 from gcode_lib._parsing import parse_line, split_comment
 from gcode_lib._state import (
     advance_state,
@@ -431,6 +431,133 @@ def compute_stats(
     stats.z_heights = seen_z
     stats.feedrates  = seen_f
     return stats
+
+
+_DEFAULT_FILAMENT_DENSITY = 1.24  # PLA, g/cm³
+
+
+def estimate_print(
+    lines: List[GCodeLine],
+    filament_type: str = "PLA",
+    filament_diameter: float = 1.75,
+    filament_density: Optional[float] = None,
+    initial_state: Optional[ModalState] = None,
+) -> PrintEstimate:
+    """Estimate print time and filament usage from a G-code line sequence.
+
+    Parameters
+    ----------
+    lines:             Parsed G-code lines.
+    filament_type:     Filament preset name for density lookup (default ``"PLA"``).
+    filament_diameter: Filament diameter in mm (default 1.75).
+    filament_density:  Explicit density in g/cm³; overrides *filament_type* lookup.
+    initial_state:     Optional starting modal state.
+
+    Returns
+    -------
+    PrintEstimate
+        Estimated time (seconds), filament length (metres), and weight (grams).
+    """
+    # Resolve density: explicit > preset lookup > PLA default
+    if filament_density is not None:
+        density = filament_density
+    else:
+        from gcode_lib._presets import FILAMENT_PRESETS
+        preset = FILAMENT_PRESETS.get(filament_type.upper())
+        density = float(preset["density"]) if preset and "density" in preset else _DEFAULT_FILAMENT_DENSITY
+
+    state = initial_state.copy() if initial_state else ModalState()
+    total_time_min = 0.0
+    total_extrusion_mm = 0.0
+
+    for line in lines:
+        if line.is_move:
+            words = line.words
+
+            # Resolve target position
+            if state.abs_xy:
+                x1 = words.get("X", state.x)
+                y1 = words.get("Y", state.y)
+                z1 = words.get("Z", state.z)
+            else:
+                x1 = state.x + words.get("X", 0.0)
+                y1 = state.y + words.get("Y", 0.0)
+                z1 = state.z + words.get("Z", 0.0)
+
+            # Feedrate: use word if present, else last modal feedrate
+            f = words.get("F", state.f)
+
+            # 3D distance
+            dist = math.sqrt(
+                (x1 - state.x) ** 2 + (y1 - state.y) ** 2 + (z1 - state.z) ** 2
+            )
+
+            # Accumulate time (F is mm/min)
+            if f is not None and f > 0 and dist > 0:
+                total_time_min += dist / f
+
+            # Accumulate extrusion
+            if "E" in words:
+                e_word = words["E"]
+                if state.abs_e:
+                    dE = e_word - state.e
+                else:
+                    dE = e_word
+                if dE > 0:
+                    total_extrusion_mm += dE
+
+        elif line.is_arc:
+            words = line.words
+            cw = line.command.upper() == "G2"
+            pts = linearize_arc_points(state, words, cw)
+
+            # Feedrate for arc
+            f = words.get("F", state.f)
+
+            # Sum segment distances through linearised arc points
+            prev_x, prev_y = state.x, state.y
+            arc_dist = 0.0
+            for xi, yi in pts:
+                arc_dist += math.sqrt((xi - prev_x) ** 2 + (yi - prev_y) ** 2)
+                prev_x, prev_y = xi, yi
+
+            # Add Z component if present
+            if "Z" in words:
+                if state.abs_xy:
+                    dz = words["Z"] - state.z
+                else:
+                    dz = words.get("Z", 0.0)
+                arc_dist = math.sqrt(arc_dist ** 2 + dz ** 2)
+
+            if f is not None and f > 0 and arc_dist > 0:
+                total_time_min += arc_dist / f
+
+            # Accumulate extrusion
+            if "E" in words:
+                e_word = words["E"]
+                if state.abs_e:
+                    dE = e_word - state.e
+                else:
+                    dE = e_word
+                if dE > 0:
+                    total_extrusion_mm += dE
+
+        advance_state(state, line)
+
+    # Convert units
+    filament_length_m = total_extrusion_mm / 1000.0
+
+    # Weight: length(mm) * cross-section area(mm²) * density(g/cm³) * (1 cm³ / 1000 mm³)
+    radius_mm = filament_diameter / 2.0
+    cross_section_mm2 = math.pi * radius_mm ** 2
+    # density is g/cm³ = g/1000mm³, so weight = length_mm * area_mm² * density / 1000
+    filament_weight_g = total_extrusion_mm * cross_section_mm2 * density / 1000.0
+
+    return PrintEstimate(
+        time_seconds=total_time_min * 60.0,
+        filament_length_m=filament_length_m,
+        filament_weight_g=filament_weight_g,
+    )
 
 
 # ---------------------------------------------------------------------------

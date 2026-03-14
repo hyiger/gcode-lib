@@ -67,6 +67,7 @@ from gcode_lib._types import (
     GCodeLine,
     GCodeStats,
     ModalState,
+    PrintEstimate,
     Thumbnail,
 )
 
@@ -98,6 +99,7 @@ from gcode_lib._transforms import (
     apply_xy_transform_by_layer,
     compute_bounds,
     compute_stats,
+    estimate_print,
     find_oob_moves,
     iter_layers,
     linearize_arcs,
