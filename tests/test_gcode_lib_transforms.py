@@ -618,3 +618,55 @@ def test_compute_bounds_skip_negative_y():
     # X and max Y should be the same
     assert b_skip.x_max == pytest.approx(30.0, abs=1e-3)
     assert b_skip.y_max == pytest.approx(15.0, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Rotational axes A, B, C carried through transforms
+# ---------------------------------------------------------------------------
+
+def test_translate_xy_preserves_rotational_axes():
+    lines = gl.parse_lines("G90\nG1 X10 Y20 A30 B45 C60 E1.0")
+    result = gl.translate_xy(lines, dx=5, dy=10)
+    g1 = [ln for ln in result if ln.command == "G1"][0]
+    assert g1.words["X"] == pytest.approx(15.0)
+    assert g1.words["Y"] == pytest.approx(30.0)
+    assert g1.words["A"] == pytest.approx(30.0)
+    assert g1.words["B"] == pytest.approx(45.0)
+    assert g1.words["C"] == pytest.approx(60.0)
+    assert g1.words["E"] == pytest.approx(1.0)
+
+
+def test_translate_xy_allow_arcs_preserves_rotational():
+    lines = gl.parse_lines("G90\nG1 X0 Y0\nG2 X10 Y0 I5 J0 A90 B180")
+    result = gl.translate_xy_allow_arcs(lines, dx=5, dy=5)
+    arc = [ln for ln in result if ln.command == "G2"][0]
+    assert arc.words["X"] == pytest.approx(15.0)
+    assert arc.words["Y"] == pytest.approx(5.0)
+    assert arc.words["A"] == pytest.approx(90.0)
+    assert arc.words["B"] == pytest.approx(180.0)
+
+
+def test_rotate_xy_preserves_rotational_axes():
+    lines = gl.parse_lines("G90\nG1 X10 Y0 A45 B90")
+    result = gl.rotate_xy(lines, angle_deg=90)
+    g1 = [ln for ln in result if ln.command == "G1"][0]
+    assert g1.words["A"] == pytest.approx(45.0)
+    assert g1.words["B"] == pytest.approx(90.0)
+
+
+def test_apply_xy_transform_preserves_rotational():
+    lines = gl.parse_lines("G90\nG1 X10 Y20 A30 C60")
+    result = gl.apply_xy_transform(lines, lambda x, y: (x + 100, y + 100))
+    g1 = [ln for ln in result if ln.command == "G1"][0]
+    assert g1.words["X"] == pytest.approx(110.0)
+    assert g1.words["Y"] == pytest.approx(120.0)
+    assert g1.words["A"] == pytest.approx(30.0)
+    assert g1.words["C"] == pytest.approx(60.0)
+
+
+def test_linearize_arcs_preserves_rotational():
+    lines = gl.parse_lines("G90\nG1 X0 Y0\nG2 X10 Y0 I5 J0 A180")
+    result = gl.linearize_arcs(lines)
+    g1s = [ln for ln in result if ln.command == "G1"]
+    # First G1 is the original G1 X0 Y0 (no A), second is the first arc segment
+    assert g1s[1].words.get("A") == pytest.approx(180.0)

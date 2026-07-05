@@ -67,6 +67,12 @@ def linearize_arcs(
         f_word = words.get("F")
         has_z  = "Z" in words
         z_word = words.get("Z")
+        has_a  = "A" in words
+        a_word = words.get("A")
+        has_b  = "B" in words
+        b_word = words.get("B")
+        has_c  = "C" in words
+        c_word = words.get("C")
 
         e_accum = 0.0
         per_e   = round(dE / n, other_decimals) if (has_e and not state.abs_e and n > 0) else 0.0
@@ -94,6 +100,12 @@ def linearize_arcs(
                 parts.append(f"Z{fmt_axis('Z', z_word, xy_decimals, other_decimals)}")
             if has_f and f_word is not None and i == 1:
                 parts.append(f"F{fmt_axis('F', f_word, xy_decimals, other_decimals)}")
+            if has_a and i == 1:
+                parts.append(f"A{fmt_axis('A', a_word, xy_decimals, other_decimals)}")
+            if has_b and i == 1:
+                parts.append(f"B{fmt_axis('B', b_word, xy_decimals, other_decimals)}")
+            if has_c and i == 1:
+                parts.append(f"C{fmt_axis('C', c_word, xy_decimals, other_decimals)}")
 
             raw = " ".join(parts)
             seg_comment = (line.comment if i == 1 else "")
@@ -107,6 +119,12 @@ def linearize_arcs(
                 new_words["Z"] = z_word
             if has_f and f_word is not None and i == 1:
                 new_words["F"] = f_word
+            if has_a and i == 1:
+                new_words["A"] = a_word  # type: ignore[possibly-undefined]
+            if has_b and i == 1:
+                new_words["B"] = b_word  # type: ignore[possibly-undefined]
+            if has_c and i == 1:
+                new_words["C"] = c_word  # type: ignore[possibly-undefined]
 
             result.append(GCodeLine(
                 raw=raw,
@@ -128,6 +146,12 @@ def linearize_arcs(
             state.e = e_end
         if has_f and f_word is not None:
             state.f = f_word
+        if has_a:
+            state.a = a_word if state.abs_xy else state.a + a_word  # type: ignore[possibly-undefined]
+        if has_b:
+            state.b = b_word if state.abs_xy else state.b + b_word  # type: ignore[possibly-undefined]
+        if has_c:
+            state.c = c_word if state.abs_xy else state.c + c_word  # type: ignore[possibly-undefined]
 
     return result
 
@@ -164,7 +188,7 @@ def apply_xy_transform(
             code, comment = split_comment(line.raw)
             new_code = replace_or_append(code, "X", xs, xy_decimals, other_decimals)
             new_code = replace_or_append(new_code, "Y", ys, xy_decimals, other_decimals)
-            for ax in ("Z", "E", "F"):
+            for ax in ("A", "B", "C", "Z", "E", "F"):
                 if ax in line.words:
                     new_code = replace_or_append(
                         new_code, ax, line.words[ax], xy_decimals, other_decimals
@@ -186,6 +210,12 @@ def apply_xy_transform(
             state.y = y_t
             if "Z" in line.words:
                 state.z = line.words["Z"]
+            if "A" in line.words:
+                state.a = line.words["A"]
+            if "B" in line.words:
+                state.b = line.words["B"]
+            if "C" in line.words:
+                state.c = line.words["C"]
             if "E" in line.words:
                 state.e = (line.words["E"] if state.abs_e
                            else state.e + line.words["E"])
@@ -611,6 +641,9 @@ def to_absolute_xy(
             x_abs = state.x + words.get("X", 0.0)
             y_abs = state.y + words.get("Y", 0.0)
             z_abs = state.z + words.get("Z", 0.0)
+            a_abs = state.a + words.get("A", 0.0)
+            b_abs = state.b + words.get("B", 0.0)
+            c_abs = state.c + words.get("C", 0.0)
 
             code, comment = split_comment(line.raw)
             new_code = code
@@ -620,18 +653,30 @@ def to_absolute_xy(
                 new_code = replace_or_append(new_code, "Y", y_abs, xy_decimals, other_decimals)
             if "Z" in words:
                 new_code = replace_or_append(new_code, "Z", z_abs, xy_decimals, other_decimals)
+            if "A" in words:
+                new_code = replace_or_append(new_code, "A", a_abs, xy_decimals, other_decimals)
+            if "B" in words:
+                new_code = replace_or_append(new_code, "B", b_abs, xy_decimals, other_decimals)
+            if "C" in words:
+                new_code = replace_or_append(new_code, "C", c_abs, xy_decimals, other_decimals)
 
             new_raw = new_code.rstrip() + ("" if not comment else " " + comment.lstrip())
             new_words = dict(words)
             if "X" in words: new_words["X"] = x_abs
             if "Y" in words: new_words["Y"] = y_abs
             if "Z" in words: new_words["Z"] = z_abs
+            if "A" in words: new_words["A"] = a_abs
+            if "B" in words: new_words["B"] = b_abs
+            if "C" in words: new_words["C"] = c_abs
 
             result.append(GCodeLine(raw=new_raw, command=cmd, words=new_words, comment=comment))
 
             state.x = x_abs
             state.y = y_abs
             state.z = z_abs
+            state.a = a_abs
+            state.b = b_abs
+            state.c = c_abs
             if "E" in words:
                 state.e = words["E"] if state.abs_e else state.e + words["E"]
             if "F" in words:
@@ -1166,7 +1211,7 @@ def apply_xy_transform_by_layer(
             code, comment = split_comment(line.raw)
             new_code = replace_or_append(code, "X", x_new, xy_decimals, other_decimals)
             new_code = replace_or_append(new_code, "Y", y_new, xy_decimals, other_decimals)
-            for ax in ("Z", "E", "F"):
+            for ax in ("A", "B", "C", "Z", "E", "F"):
                 if ax in line.words:
                     new_code = replace_or_append(
                         new_code, ax, line.words[ax], xy_decimals, other_decimals
@@ -1185,6 +1230,12 @@ def apply_xy_transform_by_layer(
             if "Z" in line.words:
                 state.z = line.words["Z"]
                 current_z = state.z
+            if "A" in line.words:
+                state.a = line.words["A"]
+            if "B" in line.words:
+                state.b = line.words["B"]
+            if "C" in line.words:
+                state.c = line.words["C"]
             if "E" in line.words:
                 state.e = line.words["E"] if state.abs_e else state.e + line.words["E"]
             if "F" in line.words:

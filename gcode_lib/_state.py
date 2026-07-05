@@ -48,6 +48,9 @@ def advance_state(state: ModalState, line: GCodeLine) -> None:
         if "X" in words: state.x = words["X"]
         if "Y" in words: state.y = words["Y"]
         if "Z" in words: state.z = words["Z"]
+        if "A" in words: state.a = words["A"]
+        if "B" in words: state.b = words["B"]
+        if "C" in words: state.c = words["C"]
         if "E" in words: state.e = words["E"]
         return
 
@@ -57,10 +60,16 @@ def advance_state(state: ModalState, line: GCodeLine) -> None:
             if "X" in words: state.x = words["X"]
             if "Y" in words: state.y = words["Y"]
             if "Z" in words: state.z = words["Z"]
+            if "A" in words: state.a = words["A"]
+            if "B" in words: state.b = words["B"]
+            if "C" in words: state.c = words["C"]
         else:
             state.x += words.get("X", 0.0)
             state.y += words.get("Y", 0.0)
             state.z += words.get("Z", 0.0)
+            state.a += words.get("A", 0.0)
+            state.b += words.get("B", 0.0)
+            state.c += words.get("C", 0.0)
         if "E" in words:
             state.e = words["E"] if state.abs_e else state.e + words["E"]
         if "F" in words:
@@ -73,10 +82,16 @@ def advance_state(state: ModalState, line: GCodeLine) -> None:
             if "X" in words: state.x = words["X"]
             if "Y" in words: state.y = words["Y"]
             state.z = words.get("Z", state.z)
+            if "A" in words: state.a = words["A"]
+            if "B" in words: state.b = words["B"]
+            if "C" in words: state.c = words["C"]
         else:
             state.x += words.get("X", 0.0)
             state.y += words.get("Y", 0.0)
             state.z += words.get("Z", 0.0)
+            state.a += words.get("A", 0.0)
+            state.b += words.get("B", 0.0)
+            state.c += words.get("C", 0.0)
         if "E" in words:
             state.e = words["E"] if state.abs_e else state.e + words["E"]
         if "F" in words:

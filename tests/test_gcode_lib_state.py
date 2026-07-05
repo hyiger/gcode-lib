@@ -137,6 +137,52 @@ def test_advance_state_f_updated():
 # advance_state — G92 position reset
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# advance_state — rotational axes A, B, C
+# ---------------------------------------------------------------------------
+
+def test_advance_state_rotational_axes_abs():
+    st = _state_after("G90\nG1 X0 Y0 A30 B45 C60")
+    assert st.a == pytest.approx(30.0)
+    assert st.b == pytest.approx(45.0)
+    assert st.c == pytest.approx(60.0)
+
+
+def test_advance_state_rotational_axes_partial():
+    st = _state_after("G90\nG1 A10\nG1 B20")
+    assert st.a == pytest.approx(10.0)
+    assert st.b == pytest.approx(20.0)
+    assert st.c == pytest.approx(0.0)
+
+
+def test_advance_state_rotational_axes_relative():
+    st = _state_after("G91\nG1 A10 B20 C30")
+    assert st.a == pytest.approx(10.0)
+    assert st.b == pytest.approx(20.0)
+    assert st.c == pytest.approx(30.0)
+
+
+def test_advance_state_rotational_axes_relative_accumulate():
+    st = _state_after("G91\nG1 A10\nG1 A15")
+    assert st.a == pytest.approx(25.0)
+
+
+def test_advance_state_g92_rotational():
+    st = _state_after("G90\nG1 A45 B90\nG92 A0 B0")
+    assert st.a == pytest.approx(0.0)
+    assert st.b == pytest.approx(0.0)
+    assert st.c == pytest.approx(0.0)
+
+
+def test_advance_state_rotational_on_arc():
+    st = _state_after("G90\nG1 X0 Y0\nG2 X10 Y0 I5 J0 A90")
+    assert st.a == pytest.approx(90.0)
+
+
+# ---------------------------------------------------------------------------
+# advance_state — G92 position reset
+# ---------------------------------------------------------------------------
+
 def test_advance_state_g92_e_reset():
     st = _state_after("M82\nG1 E5.0\nG92 E0")
     assert st.e == pytest.approx(0.0)
