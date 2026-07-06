@@ -107,6 +107,21 @@ def test_parse_words_all_axes():
         assert axis in d
 
 
+def test_parse_words_rotational_axes():
+    d = gl.parse_words("G1 X10 Y20 A30 B45 C60")
+    assert d["A"] == pytest.approx(30.0)
+    assert d["B"] == pytest.approx(45.0)
+    assert d["C"] == pytest.approx(60.0)
+
+
+def test_parse_words_mixed_with_rotational():
+    d = gl.parse_words("G1 X10 Y20 Z0.3 A90 B180 C270 E0.1 F3000")
+    assert d["A"] == pytest.approx(90.0)
+    assert d["B"] == pytest.approx(180.0)
+    assert d["C"] == pytest.approx(270.0)
+    assert d["E"] == pytest.approx(0.1)
+
+
 # ---------------------------------------------------------------------------
 # parse_line
 # ---------------------------------------------------------------------------

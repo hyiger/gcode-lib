@@ -20,7 +20,7 @@ DEFAULT_OTHER_DECIMALS = 5    # Output decimal places for E/F/Z/I/J/K
 _MOVE_RE = re.compile(r"^(G0|G1)\b", re.IGNORECASE)
 _ARC_RE  = re.compile(r"^(G2|G3)\b", re.IGNORECASE)
 _NUM_RE  = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
-_AXIS_RE = re.compile(rf"([XYZEFRIJK])\s*({_NUM_RE})", re.IGNORECASE)
+_AXIS_RE = re.compile(rf"([ABCXYZEFRIJK])\s*({_NUM_RE})", re.IGNORECASE)
 
 # Binary .bgcode constants
 _BGCODE_MAGIC = b"GCDE"

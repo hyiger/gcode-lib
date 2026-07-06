@@ -20,6 +20,9 @@ class ModalState:
     x: float = 0.0
     y: float = 0.0
     z: float = 0.0
+    a: float = 0.0
+    b: float = 0.0
+    c: float = 0.0
     e: float = 0.0
     f: Optional[float] = None
 
@@ -30,6 +33,7 @@ class ModalState:
             abs_e=self.abs_e,
             ij_relative=self.ij_relative,
             x=self.x, y=self.y, z=self.z,
+            a=self.a, b=self.b, c=self.c,
             e=self.e, f=self.f,
         )
 
