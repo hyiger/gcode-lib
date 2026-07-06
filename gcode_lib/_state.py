@@ -201,18 +201,36 @@ def fmt_axis(
 def replace_or_append(
     code: str,
     axis: str,
-    val: float,
+    val: Optional[float],
     xy_decimals: int = DEFAULT_XY_DECIMALS,
     other_decimals: int = DEFAULT_OTHER_DECIMALS,
 ) -> str:
-    """Replace the value of *axis* in *code*, or append it if absent.
+    """Replace the first occurrence of `<axis> <number>` in *code*, or append it if absent.
 
-    Only the first occurrence of the axis letter is replaced.
+    * If *val* is not None, the numeric part is replaced with the formatted
+      value while preserving the original whitespace after the axis.
+    * If *val* is None, the whole `<axis> <number>` token (including its
+      trailing whitespace) is removed.
     """
     axis = axis.upper()
-    tok = f"{axis}{fmt_axis(axis, val, xy_decimals, other_decimals)}"
-    pat = re.compile(rf"(?i)\b{axis}\s*({_NUM_RE})\b")
-    return pat.sub(tok, code, count=1) if pat.search(code) else (code + " " + tok)
+    if val is None:
+        repl = ''
+    else:
+        repl = f"{axis}{fmt_axis(axis, val, xy_decimals, other_decimals)}"
+
+    pat = re.compile(rf"(?i)\b{axis}\s*{_NUM_RE}(\s*)\b")
+
+    def _sub(m: re.Match) -> str:
+        # m.group(1) - whitespace after the number
+        if val is None:
+            return ''
+        else:
+            return f"{repl}{m.group(1)}"
+
+    if pat.search(code):
+        return pat.sub(_sub, code, count=1)
+    else:
+        return f"{code}{' ' + repl if repl else ''}"
 
 
 # ---------------------------------------------------------------------------
