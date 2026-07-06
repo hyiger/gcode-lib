@@ -181,6 +181,42 @@ def test_parse_line_is_not_move_arc():
 
 
 # ---------------------------------------------------------------------------
+# Parenthesised comments (RS-274)
+# ---------------------------------------------------------------------------
+
+def test_parse_paren_comment_only_has_no_command():
+    line = gl.parse_line("(Exported by FreeCAD)")
+    assert line.command == ""
+    assert line.words == {}
+
+
+def test_parse_paren_comment_does_not_leak_words():
+    """Text inside parens like 'Surface006' must not produce a false E word."""
+    line = gl.parse_line("(Begin operation: Surface006)")
+    assert "E" not in line.words
+
+
+def test_parse_paren_inline_ignored():
+    line = gl.parse_line("G17 G90 (set absolute mode)")
+    assert line.command == "G17"
+    assert "E" not in line.words
+
+
+def test_parse_paren_with_semicolon():
+    line = gl.parse_line("G1 X10 (inline comment) F300 ; end")
+    assert line.command == "G1"
+    assert line.words["X"] == pytest.approx(10.0)
+    assert line.words["F"] == pytest.approx(300.0)
+    assert "E" not in line.words
+    assert line.comment == "; end"
+
+
+def test_parse_paren_preserves_raw():
+    line = gl.parse_line("(Begin operation: Surface006)")
+    assert line.raw == "(Begin operation: Surface006)"
+
+
+# ---------------------------------------------------------------------------
 # parse_lines
 # ---------------------------------------------------------------------------
 
