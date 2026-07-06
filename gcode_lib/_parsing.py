@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Tuple
 
 from gcode_lib._constants import _AXIS_RE
 from gcode_lib._types import GCodeLine
+
+# Matches parenthesised comments (RS-274 standard).  Nested parens are not supported.
+_PAREN_RE = re.compile(r"\([^)]*\)")
 
 
 def split_comment(line: str) -> Tuple[str, str]:
@@ -39,13 +43,16 @@ def parse_line(raw_line: str) -> GCodeLine:
     """Parse one line of G-code text into a :class:`GCodeLine`.
 
     The trailing newline is stripped before processing.
+    Both ``;`` and ``(…)`` comment styles are recognised.
     """
     line = raw_line.rstrip("\n")
     code, comment = split_comment(line)
-    s = code.strip()
-    parts = s.split(None, 1)
+
+    stripped_code = _PAREN_RE.sub(" ", code).strip()
+    parts = stripped_code.split(None, 1) if stripped_code else []
     command = parts[0].upper() if parts else ""
-    words = parse_words(code) if s else {}
+    words = parse_words(stripped_code) if stripped_code else {}
+
     return GCodeLine(raw=line, command=command, words=words, comment=comment)
 
 
