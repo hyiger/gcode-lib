@@ -27,6 +27,12 @@ from gcode_lib._state import (
 # Transforms
 # ---------------------------------------------------------------------------
 
+def _relative_step(target: float, emitted: float, decimals: int) -> Tuple[float, float]:
+    """Return the rounded step from *emitted* to *target* and the new emitted position."""
+    step = round(target - emitted, decimals)
+    return step, emitted + step
+
+
 def linearize_arcs(
     lines: List[GCodeLine],
     seg_mm: float = DEFAULT_ARC_SEG_MM,
@@ -71,7 +77,15 @@ def linearize_arcs(
         e_accum = 0.0
         per_e   = round(dE / n, other_decimals) if (has_e and not state.abs_e and n > 0) else 0.0
 
+        # Under G91, measure each step from the rounded position already emitted
+        # so rounding error cannot accumulate across segments.
+        emitted_x, emitted_y = state.x, state.y
+
         for i, (xi, yi) in enumerate(pts, start=1):
+            if not state.abs_xy:
+                xi, emitted_x = _relative_step(xi, emitted_x, xy_decimals)
+                yi, emitted_y = _relative_step(yi, emitted_y, xy_decimals)
+
             parts = [
                 "G1",
                 f"X{fmt_axis('X', xi, xy_decimals, other_decimals)}",
@@ -675,6 +689,7 @@ def translate_xy_allow_arcs(
                     "Call to_absolute_xy() first."
                 )
 
+            x_eff = words.get("X", state.x)
             y_eff = words.get("Y", state.y)
             if skip_negative_y and y_eff < 0:
                 result.append(line)
@@ -682,32 +697,24 @@ def translate_xy_allow_arcs(
                 continue
 
             code, comment = split_comment(line.raw)
-            new_code = code
 
-            if "X" in words:
-                new_code = replace_or_append(
-                    new_code, "X", words["X"] + dx, xy_decimals, other_decimals
-                )
-            if "Y" in words:
-                new_code = replace_or_append(
-                    new_code, "Y", words["Y"] + dy, xy_decimals, other_decimals
-                )
-
+            # Write both axes: an omitted axis may still hold an untranslated
+            # position, either from a skipped move or from the start of the file.
             new_words = dict(words)
-            if "X" in words: new_words["X"] = words["X"] + dx
-            if "Y" in words: new_words["Y"] = words["Y"] + dy
+            new_words["X"] = x_eff + dx
+            new_words["Y"] = y_eff + dy
+            new_code = replace_or_append(code, "X", new_words["X"], xy_decimals, other_decimals)
+            new_code = replace_or_append(new_code, "Y", new_words["Y"], xy_decimals, other_decimals)
 
-            if line.is_arc and not state.ij_relative:
-                if "I" in words:
-                    new_words["I"] = words["I"] + dx
-                    new_code = replace_or_append(
-                        new_code, "I", new_words["I"], xy_decimals, other_decimals
-                    )
-                if "J" in words:
-                    new_words["J"] = words["J"] + dy
-                    new_code = replace_or_append(
-                        new_code, "J", new_words["J"], xy_decimals, other_decimals
-                    )
+            if line.is_arc and not state.ij_relative and ("I" in words or "J" in words):
+                new_words["I"] = words.get("I", 0.0) + dx
+                new_words["J"] = words.get("J", 0.0) + dy
+                new_code = replace_or_append(
+                    new_code, "I", new_words["I"], xy_decimals, other_decimals
+                )
+                new_code = replace_or_append(
+                    new_code, "J", new_words["J"], xy_decimals, other_decimals
+                )
 
             new_raw = new_code.rstrip() + ("" if not comment else " " + comment.lstrip())
 
@@ -794,15 +801,13 @@ def rotate_xy(
             xr, yr = _rot(x_abs, y_abs)
 
             code, comment = split_comment(line.raw)
-            new_code = code
             new_words = dict(words)
 
-            if "X" in words:
-                new_words["X"] = xr
-                new_code = replace_or_append(new_code, "X", xr, xy_decimals, other_decimals)
-            if "Y" in words:
-                new_words["Y"] = yr
-                new_code = replace_or_append(new_code, "Y", yr, xy_decimals, other_decimals)
+            # Rotation mixes both axes, so an omitted word can no longer be left implicit.
+            new_words["X"] = xr
+            new_words["Y"] = yr
+            new_code = replace_or_append(code, "X", xr, xy_decimals, other_decimals)
+            new_code = replace_or_append(new_code, "Y", yr, xy_decimals, other_decimals)
 
             if line.is_arc and ("I" in words or "J" in words):
                 i_val = words.get("I", 0.0)
@@ -811,12 +816,10 @@ def rotate_xy(
                     ir, jr = _rot_vec(i_val, j_val)
                 else:
                     ir, jr = _rot(i_val, j_val)
-                if "I" in words:
-                    new_words["I"] = ir
-                    new_code = replace_or_append(new_code, "I", ir, xy_decimals, other_decimals)
-                if "J" in words:
-                    new_words["J"] = jr
-                    new_code = replace_or_append(new_code, "J", jr, xy_decimals, other_decimals)
+                new_words["I"] = ir
+                new_words["J"] = jr
+                new_code = replace_or_append(new_code, "I", ir, xy_decimals, other_decimals)
+                new_code = replace_or_append(new_code, "J", jr, xy_decimals, other_decimals)
 
             new_raw = new_code.rstrip() + ("" if not comment else " " + comment.lstrip())
             result.append(GCodeLine(
@@ -1138,12 +1141,16 @@ def apply_xy_transform_by_layer(
     """Apply *transform_fn* only to layers within ``[z_min, z_max]``."""
     result: List[GCodeLine] = []
     state = initial_state.copy() if initial_state else ModalState()
-    current_z: float = state.z
 
     for line in lines:
+        # As in iter_layers, a Z-changing line belongs to the layer it moves to.
+        layer_z = state.z
+        if (line.is_move or line.is_arc) and "Z" in line.words:
+            layer_z = line.words["Z"] if state.abs_xy else state.z + line.words["Z"]
+
         in_range = (
-            (z_min is None or current_z >= z_min - EPS) and
-            (z_max is None or current_z <= z_max + EPS)
+            (z_min is None or layer_z >= z_min - EPS) and
+            (z_max is None or layer_z <= z_max + EPS)
         )
 
         if in_range and line.is_move and ("X" in line.words or "Y" in line.words):
@@ -1158,8 +1165,6 @@ def apply_xy_transform_by_layer(
             if skip_negative_y and y_orig < 0:
                 result.append(line)
                 advance_state(state, line)
-                if "Z" in line.words:
-                    current_z = line.words["Z"]
                 continue
             x_new, y_new = transform_fn(x_orig, y_orig)
 
@@ -1184,16 +1189,12 @@ def apply_xy_transform_by_layer(
             state.y = y_orig
             if "Z" in line.words:
                 state.z = line.words["Z"]
-                current_z = state.z
             if "E" in line.words:
                 state.e = line.words["E"] if state.abs_e else state.e + line.words["E"]
             if "F" in line.words:
                 state.f = line.words["F"]
         else:
             result.append(line)
-            prev_z = state.z
             advance_state(state, line)
-            if abs(state.z - prev_z) > EPS:
-                current_z = state.z
 
     return result

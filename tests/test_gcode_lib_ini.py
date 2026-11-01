@@ -461,3 +461,60 @@ def test_parse_ini_nozzle_flags_missing(tmp_path):
     result = gl.parse_prusaslicer_ini(str(ini))
     assert "nozzle_high_flow" not in result
     assert "nozzle_hardened" not in result
+
+
+# ===========================================================================
+# parse_prusaslicer_ini — unusable values are omitted
+# ===========================================================================
+
+def test_extrusion_width_garbage_ignored():
+    assert gl._ini_parse_extrusion_width("abc") is None
+
+
+@pytest.mark.parametrize(
+    "ini_line, result_key",
+    [
+        ("nozzle_diameter = abc", "nozzle_diameter"),
+        ("nozzle_diameter = 0", "nozzle_diameter"),
+        ("temperature = 0", "nozzle_temp"),
+        ("bed_temperature = -1", "bed_temp"),
+        ("max_fan_speed = 150", "fan_speed"),
+        ("max_fan_speed = -5", "fan_speed"),
+        ("max_fan_speed = abc", "fan_speed"),
+        ("layer_height = 0", "layer_height"),
+        ("extrusion_width = abc", "extrusion_width"),
+        ("bed_shape = not a shape", "bed_center"),
+        ("printer_model =", "printer_model"),
+        ("filament_type =", "filament_type"),
+        ("nozzle_high_flow = abc", "nozzle_high_flow"),
+        ("filament_abrasive = abc", "nozzle_hardened"),
+        ("printer_settings_id =", "nozzle_hardened"),
+    ],
+)
+def test_parse_ini_unusable_value_is_omitted(tmp_path, ini_line, result_key):
+    ini = tmp_path / "test.ini"
+    ini.write_text(ini_line + "\n")
+    assert result_key not in gl.parse_prusaslicer_ini(str(ini))
+
+
+def test_parse_ini_invalid_temperature_falls_back_to_first_layer(tmp_path):
+    ini = tmp_path / "test.ini"
+    ini.write_text("temperature = 0\nfirst_layer_temperature = 215\n")
+    assert gl.parse_prusaslicer_ini(str(ini))["nozzle_temp"] == 215
+
+
+def test_parse_ini_invalid_bed_temperature_falls_back_to_first_layer(tmp_path):
+    ini = tmp_path / "test.ini"
+    ini.write_text("bed_temperature = abc\nfirst_layer_bed_temperature = 60\n")
+    assert gl.parse_prusaslicer_ini(str(ini))["bed_temp"] == 60
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        ('start_filament_gcode = ""', 'start_filament_gcode = "M572 S0.0400"'),
+        ("start_filament_gcode = ", "start_filament_gcode = M572 S0.0400"),
+    ],
+)
+def test_inject_pa_into_empty_value(line, expected):
+    assert gl.inject_pa_into_start_gcode([line], 0.04) == [expected]

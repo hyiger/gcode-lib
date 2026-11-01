@@ -421,3 +421,10 @@ class TestPrusaLinkUpload:
         assert " " not in path
         assert "%20" in path
         assert "%23" in path
+
+
+def test_url_without_scheme_is_wrapped_as_prusalink_error():
+    with pytest.raises(gl.PrusaLinkError) as excinfo:
+        gl._prusalink_request("not-a-url", API_KEY, "GET", "/api/version")
+    assert excinfo.value.status_code == 0
+    assert "Invalid URL" in excinfo.value.message

@@ -175,9 +175,9 @@ def fmt_float(v: float, places: int) -> str:
     >>> fmt_float(-0.0, 3)
     '0'
     """
-    s = f"{v:.{places}f}".rstrip("0").rstrip(".")
-    if not s or s == "-":
-        return "0"
+    s = f"{v:.{places}f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
     # Negative zero: "-0" should render as "0"
     if s == "-0":
         return "0"
@@ -219,13 +219,37 @@ def replace_or_append(
 # Arc geometry helpers
 # ---------------------------------------------------------------------------
 
-def _arc_center(state: ModalState, words: Dict[str, float]) -> Tuple[float, float]:
-    """Compute the absolute arc centre from I/J words and modal state."""
+def _arc_center(
+    state: ModalState, words: Dict[str, float], cw: bool
+) -> Tuple[float, float]:
+    """Compute the absolute arc centre from I/J or R words and modal state."""
+    if "R" in words and "I" not in words and "J" not in words:
+        return _arc_center_from_radius(state, words, cw)
     I = words.get("I", 0.0)
     J = words.get("J", 0.0)
     if state.ij_relative:
         return (state.x + I, state.y + J)
     return (I, J)
+
+
+def _arc_center_from_radius(
+    state: ModalState, words: Dict[str, float], cw: bool
+) -> Tuple[float, float]:
+    """Compute the centre of an R-format arc; a negative R selects the major arc."""
+    x1, y1 = _arc_end_abs(state, words)
+    r = words["R"]
+    mid_dx = 0.5 * (x1 - state.x)
+    mid_dy = 0.5 * (y1 - state.y)
+    half_chord = math.hypot(mid_dx, mid_dy)
+    if half_chord < EPS:
+        return (state.x, state.y)
+    # Marlin's convention: a radius too short to span the chord becomes a semicircle.
+    h = math.sqrt(max(0.0, (r - half_chord) * (r + half_chord)))
+    side = -1.0 if cw != (r < 0) else 1.0
+    return (
+        state.x + mid_dx - side * h * mid_dy / half_chord,
+        state.y + mid_dy + side * h * mid_dx / half_chord,
+    )
 
 
 def _arc_end_abs(state: ModalState, words: Dict[str, float]) -> Tuple[float, float]:
@@ -266,7 +290,7 @@ def linearize_arc_points(
     """
     x0, y0 = state.x, state.y
     x1, y1 = _arc_end_abs(state, words)
-    cx, cy = _arc_center(state, words)
+    cx, cy = _arc_center(state, words, cw)
 
     r0 = math.hypot(x0 - cx, y0 - cy)
     r1 = math.hypot(x1 - cx, y1 - cy)

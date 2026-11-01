@@ -6,6 +6,7 @@ import struct
 import sys
 import zlib
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -564,3 +565,241 @@ def _make_hs_bgcode(gcode_text: str) -> bytes:
     cksum    = zlib.crc32(payload, cksum) & 0xFFFFFFFF
     gcode_block = hdr + params + payload + struct.pack("<I", cksum)
     return file_hdr + gcode_block
+
+
+# ---------------------------------------------------------------------------
+# Helpers: blocks with explicit compression, encoding and size fields
+# ---------------------------------------------------------------------------
+
+BLK_GCODE = 1
+BLK_THUMBNAIL = 5
+COMP_NONE = 0
+COMP_DEFLATE = 1
+COMP_HEATSHRINK_11_4 = 2
+COMP_HEATSHRINK_12_4 = 3
+ENC_RAW = struct.pack("<H", 0)
+THUMB_PARAMS = struct.pack("<HHH", 0, 8, 8)
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + bytes(range(32))
+
+
+def _block(btype: int, comp: int, params: bytes, payload: bytes, uncomp_size: int) -> bytes:
+    if comp == COMP_NONE:
+        hdr = struct.pack("<HHI", btype, comp, uncomp_size)
+    else:
+        hdr = struct.pack("<HHII", btype, comp, uncomp_size, len(payload))
+    body = hdr + params + payload
+    return body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
+
+
+def _bgcode_file(*blocks: bytes) -> bytes:
+    return b"GCDE" + struct.pack("<IH", 1, 1) + b"".join(blocks)
+
+
+def _raw_gcode_block(text: str = "G1 X1\n") -> bytes:
+    payload = text.encode("utf-8")
+    return _block(BLK_GCODE, COMP_NONE, ENC_RAW, payload, len(payload))
+
+
+REPEATED_TEXT = b"G1 G1 \n"
+
+
+def _heatshrink_repeated_text(window_bits: int) -> bytes:
+    """Encode REPEATED_TEXT with a back-reference, so decoding needs the right window size."""
+    literal = lambda text: ["1" + format(byte, "08b") for byte in text]
+    back_reference = ["0" + format(2, f"0{window_bits}b") + format(2, "04b")]  # copy 3 from -3
+    return _hs_bitstream(*literal(b"G1 "), *back_reference, *literal(b"\n"))
+
+
+COMPRESSED_TEXT = [
+    pytest.param(COMP_DEFLATE, zlib.compress(REPEATED_TEXT), id="deflate"),
+    pytest.param(COMP_HEATSHRINK_11_4, _heatshrink_repeated_text(11), id="heatshrink-11-4"),
+    pytest.param(COMP_HEATSHRINK_12_4, _heatshrink_repeated_text(12), id="heatshrink-12-4"),
+]
+
+
+# ---------------------------------------------------------------------------
+# bgcode block decoding
+# ---------------------------------------------------------------------------
+
+class TestBgcodeBlockDecoding:
+    @pytest.mark.parametrize("comp, payload", COMPRESSED_TEXT)
+    def test_compressed_gcode_block(self, comp, payload):
+        block = _block(BLK_GCODE, comp, ENC_RAW, payload, len(REPEATED_TEXT))
+        gf = gl.read_bgcode(_bgcode_file(block))
+        assert [line.raw for line in gf.lines] == ["G1 G1 "]
+
+    @pytest.mark.parametrize("comp, payload", COMPRESSED_TEXT)
+    def test_compressed_thumbnail_block(self, comp, payload):
+        thumb = _block(BLK_THUMBNAIL, comp, THUMB_PARAMS, payload, len(REPEATED_TEXT))
+        gf = gl.read_bgcode(_bgcode_file(thumb, _raw_gcode_block()))
+        assert gf.thumbnails[0].data == REPEATED_TEXT
+        assert gf.thumbnails[0]._raw_block == thumb
+
+    def test_gcode_spanning_multiple_blocks_is_concatenated(self):
+        data = _bgcode_file(_raw_gcode_block("G1 X1\n"), _raw_gcode_block("G1 X2\n"))
+        assert [line.raw for line in gl.read_bgcode(data).lines] == ["G1 X1", "G1 X2"]
+
+
+class TestBgcodeCorruptInput:
+    def test_trailing_bytes_shorter_than_a_header(self):
+        data = _bgcode_file(_raw_gcode_block()) + b"\x01\x02"
+        with pytest.raises(ValueError, match="Truncated block header"):
+            gl.read_bgcode(data)
+
+    def test_compressed_header_cut_short(self):
+        data = _bgcode_file(_raw_gcode_block()) + struct.pack("<HHI", BLK_GCODE, COMP_DEFLATE, 10)
+        with pytest.raises(ValueError, match="Truncated compressed block header"):
+            gl.read_bgcode(data)
+
+    def test_payload_cut_short(self):
+        with pytest.raises(ValueError, match="Truncated block payload"):
+            gl.read_bgcode(_bgcode_file(_raw_gcode_block())[:-6])
+
+    def test_unknown_compression(self):
+        block = _block(BLK_GCODE, 9, ENC_RAW, b"x", 1)
+        with pytest.raises(ValueError, match="Unknown compression type 9"):
+            gl.read_bgcode(_bgcode_file(block))
+
+    def test_unsupported_encoding(self):
+        block = _block(BLK_GCODE, COMP_NONE, struct.pack("<H", 99), b"G1", 2)
+        with pytest.raises(ValueError, match="Unsupported GCode block encoding 99"):
+            gl.read_bgcode(_bgcode_file(block))
+
+    @pytest.mark.parametrize(
+        "btype, params", [(BLK_GCODE, ENC_RAW), (BLK_THUMBNAIL, THUMB_PARAMS)],
+    )
+    def test_corrupt_deflate_stream(self, btype, params):
+        block = _block(btype, COMP_DEFLATE, params, b"not a zlib stream", 8)
+        with pytest.raises(ValueError, match="DEFLATE decompression failed"):
+            gl.read_bgcode(_bgcode_file(block))
+
+    def test_deflate_output_larger_than_advertised(self):
+        payload = zlib.compress(bytes(range(256)) * 4)
+        block = _block(BLK_GCODE, COMP_DEFLATE, ENC_RAW, payload, 10)
+        with pytest.raises(ValueError, match="exceeds advertised size"):
+            gl.read_bgcode(_bgcode_file(block))
+
+    def test_heatshrink_stream_ends_early(self):
+        with pytest.raises(ValueError, match="ended before expected output size"):
+            gl._heatshrink_decompress(_hs_bitstream("1", "0100000"), 11, 4, 1)
+
+    def test_heatshrink_backref_clipped_to_expected_size(self):
+        data = _hs_bitstream("1", "01000001", "0", "00000000", "1111")  # 'A', copy 16
+        assert gl._heatshrink_decompress(data, 8, 4, 3) == b"AAA"
+
+
+class TestMeatpackModeSwitches:
+    ENABLE = bytes([0xFF, 0xFF, 251])
+    RESET_ALL = bytes([0xFF, 0xFF, 249])
+    ENABLE_NO_SPACES = bytes([0xFF, 0xFF, 247])
+    DISABLE_NO_SPACES = bytes([0xFF, 0xFF, 246])
+    PACKED_G1 = bytes([0x1D])
+    PACKED_SPACE_SLOT = bytes([0xBB])  # "  ", or "EE" in no-spaces mode
+
+    def test_reset_all_disables_packing(self):
+        data = self.ENABLE + self.PACKED_G1 + self.RESET_ALL + b"a"
+        assert gl._meatpack_decode(data) == "G1a"
+
+    def test_reset_all_restores_character_table(self):
+        data = (
+            self.ENABLE + self.ENABLE_NO_SPACES + self.PACKED_SPACE_SLOT
+            + self.RESET_ALL + self.ENABLE + self.PACKED_SPACE_SLOT
+        )
+        assert gl._meatpack_decode(data) == "EE  "
+
+    def test_disable_no_spaces_restores_character_table(self):
+        data = (
+            self.ENABLE + self.ENABLE_NO_SPACES + self.PACKED_SPACE_SLOT
+            + self.DISABLE_NO_SPACES + self.PACKED_SPACE_SLOT
+        )
+        assert gl._meatpack_decode(data) == "EE  "
+
+    def test_unknown_command_is_ignored(self):
+        data = self.ENABLE + bytes([0xFF, 0xFF, 0x01]) + self.PACKED_G1
+        assert gl._meatpack_decode(data) == "G1"
+
+    def test_signal_prefix_at_end_of_stream_is_ignored(self):
+        data = self.ENABLE + self.PACKED_G1 + b"\xff\xff"
+        assert gl._meatpack_decode(data) == "G1"
+
+    def test_held_character_flushed_when_raw_byte_is_missing(self):
+        assert gl._meatpack_decode(self.ENABLE + bytes([0x1F])) == "1"
+
+
+# ---------------------------------------------------------------------------
+# write_bgcode
+# ---------------------------------------------------------------------------
+
+class TestWriteBgcode:
+    def test_raw_block_is_embedded_verbatim(self):
+        block = _make_thumbnail_block(PNG_BYTES, width=32, height=24)
+        # params and data disagree with the block, so only verbatim embedding
+        # can produce the dimensions and bytes asserted below.
+        thumb = gl.Thumbnail(params=struct.pack("<HHH", 0, 1, 1), data=b"ignored", _raw_block=block)
+        data = gl.write_bgcode("G1 X1\n", thumbnails=[thumb])
+        assert block in data
+        back = gl.read_bgcode(data).thumbnails[0]
+        assert (back.width, back.height, back.data) == (32, 24, PNG_BYTES)
+
+    def test_compressed_thumbnail_survives_read_then_write_unchanged(self):
+        block = _block(
+            BLK_THUMBNAIL, COMP_DEFLATE, THUMB_PARAMS, zlib.compress(PNG_BYTES), len(PNG_BYTES),
+        )
+        gf = gl.read_bgcode(_bgcode_file(block, _raw_gcode_block()))
+        assert block in gl.write_bgcode("G1 X2\n", thumbnails=gf.thumbnails)
+
+    def test_thumbnails_precede_gcode(self):
+        thumb = gl.Thumbnail(params=THUMB_PARAMS, data=PNG_BYTES, _raw_block=b"")
+        data = gl.write_bgcode("G1 X1\n", thumbnails=[thumb])
+        assert struct.unpack_from("<H", data, 10)[0] == BLK_THUMBNAIL
+
+    def test_empty_gcode_round_trip(self):
+        assert gl.read_bgcode(gl.write_bgcode("")).lines == []
+
+    def test_ascii_to_binary_keeps_thumbnails_out_of_the_gcode_block(self):
+        text = gl.encode_thumbnail_comment_block(8, 8, PNG_BYTES) + "\nG28\nG1 X10 Y10\n"
+        gf = gl.from_text(text)
+        gcode = "\n".join(line.raw for line in gf.lines) + "\n"
+        back = gl.read_bgcode(gl.write_bgcode(gcode, thumbnails=gf.thumbnails))
+        assert [line.raw for line in back.lines] == [line.raw for line in gf.lines]
+        assert not any("thumbnail" in line.raw for line in back.lines)
+        assert back.thumbnails[0].data == PNG_BYTES
+
+
+# ---------------------------------------------------------------------------
+# to_text / save edge cases
+# ---------------------------------------------------------------------------
+
+def test_to_text_thumbnails_without_gcode():
+    thumb = gl.Thumbnail(params=THUMB_PARAMS, data=PNG_BYTES, _raw_block=b"")
+    gf = gl.GCodeFile(lines=[], thumbnails=[thumb], source_format="text")
+    back = gl.from_text(gl.to_text(gf))
+    assert back.thumbnails[0].data == PNG_BYTES
+    assert not any(line.command for line in back.lines)
+
+
+def _text_file() -> gl.GCodeFile:
+    return gl.from_text("G1 X1\n")
+
+
+def _binary_file() -> gl.GCodeFile:
+    return gl.read_bgcode(gl.write_bgcode("G1 X1\n"))
+
+
+@pytest.mark.parametrize("factory", [_text_file, _binary_file])
+class TestSaveFailure:
+    def test_failed_replace_keeps_original_and_removes_temp(self, factory, tmp_path):
+        target = tmp_path / "out.gcode"
+        target.write_text("original")
+        with patch("gcode_lib._io.os.replace", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                gl.save(factory(), str(target))
+        assert target.read_text() == "original"
+        assert [path.name for path in tmp_path.iterdir()] == ["out.gcode"]
+
+    def test_failed_cleanup_does_not_mask_the_write_error(self, factory, tmp_path):
+        target = tmp_path / "out.gcode"
+        with patch("gcode_lib._io.os.replace", side_effect=OSError("disk full")), \
+             patch("gcode_lib._io.os.unlink", side_effect=OSError("busy")):
+            with pytest.raises(OSError, match="disk full"):
+                gl.save(factory(), str(target))

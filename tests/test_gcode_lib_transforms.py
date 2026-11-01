@@ -618,3 +618,334 @@ def test_compute_bounds_skip_negative_y():
     # X and max Y should be the same
     assert b_skip.x_max == pytest.approx(30.0, abs=1e-3)
     assert b_skip.y_max == pytest.approx(15.0, abs=1e-3)
+
+
+def test_compute_bounds_skip_negative_y_keeps_y_zero():
+    """Y=0 is on the bed; only strictly negative Y is skipped."""
+    lines = gl.parse_lines("G90\nG1 X5 Y0")
+    bounds = gl.compute_bounds(lines, skip_negative_y=True)
+    assert bounds.valid
+    assert bounds.y_min == pytest.approx(0.0)
+
+
+def test_compute_bounds_skip_negative_y_filters_arc_points():
+    """Only the part of an arc below Y=0 is excluded."""
+    lines = gl.parse_lines("G90\nG1 X0 Y0\nG3 X10 Y0 I5 J0")  # dips to Y=-5
+    assert gl.compute_bounds(lines).y_min == pytest.approx(-5.0, abs=0.01)
+    skipped = gl.compute_bounds(lines, skip_negative_y=True)
+    assert skipped.y_min == pytest.approx(0.0)
+    assert skipped.x_max == pytest.approx(10.0)
+
+
+def test_compute_bounds_extruding_only_ignores_travel_arc():
+    lines = gl.parse_lines("G90\nM83\nG2 X10 Y0 I5 J0")
+    assert not gl.compute_bounds(lines, extruding_only=True).valid
+
+
+def test_compute_bounds_extruding_only_includes_extruding_arc():
+    lines = gl.parse_lines("G90\nM83\nG2 X10 Y0 I5 J0 E1")
+    assert gl.compute_bounds(lines, extruding_only=True).x_max == pytest.approx(10.0)
+
+
+# ---------------------------------------------------------------------------
+# Formatting and arc-linearization edge cases
+# ---------------------------------------------------------------------------
+
+def _final_xy(lines):
+    """Replay the written text of *lines* and return the resulting XY position."""
+    state = gl.ModalState()
+    for line in lines:
+        gl.advance_state(state, gl.parse_line(line.raw))
+    return state.x, state.y
+
+
+def _shift_x(x, y):
+    return x + 100.0, y
+
+
+def test_fmt_float_zero_with_zero_places():
+    assert gl.fmt_float(0.0, 0) == "0"
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [(10.0, "10"), (100.0, "100"), (20.4, "20"), (-20.4, "-20"), (-0.4, "0")],
+)
+def test_fmt_float_zero_places_keeps_integer_digits(value, expected):
+    assert gl.fmt_float(value, 0) == expected
+
+
+def test_translate_xy_zero_decimals_keeps_coordinates():
+    lines = gl.parse_lines("G90\nG1 X100 Y20")
+    assert gl.translate_xy(lines, 10.0, 0.0, xy_decimals=0)[1].raw == "G1 X110 Y20"
+
+
+def test_linearize_arcs_absolute_path_ends_where_source_ends():
+    src = gl.parse_lines("G90\nG1 X10 Y0\nG3 X0 Y10 I-10 J0")
+    assert _final_xy(gl.linearize_arcs(src)) == pytest.approx(_final_xy(src), abs=1e-3)
+
+
+def test_linearize_arcs_relative_path_ends_where_source_ends():
+    src = gl.parse_lines("G91\nG1 X10 Y0\nG3 X-10 Y10 I-10 J0")
+    assert _final_xy(gl.linearize_arcs(src)) == pytest.approx(_final_xy(src), abs=1e-3)
+
+
+def test_linearize_arcs_relative_output_stays_on_the_arc():
+    src = gl.parse_lines("G91\nG1 X10 Y0\nG3 X-10 Y10 I-10 J0")
+    state = gl.ModalState()
+    for line in gl.linearize_arcs(src):
+        gl.advance_state(state, gl.parse_line(line.raw))
+        if line.command == "G1":
+            assert math.hypot(state.x, state.y) == pytest.approx(10.0, abs=0.01)
+
+
+def test_linearize_arcs_relative_rounding_does_not_accumulate():
+    src = gl.parse_lines("G91\nG1 X7.3 Y2.1\nG2 I-7.3 J-2.1")  # full circle, hundreds of segments
+    result = gl.linearize_arcs(src)
+    assert len(result) > 200
+    assert _final_xy(result) == pytest.approx((7.3, 2.1), abs=6e-4)
+
+
+def test_linearize_arcs_r_format_stays_on_the_circle():
+    result = gl.linearize_arcs(gl.parse_lines("G90\nG1 X10 Y0\nG3 X0 Y10 R10"))
+    assert not any(line.is_arc for line in result)
+    for line in result[2:]:
+        assert math.hypot(line.words["X"], line.words["Y"]) == pytest.approx(10.0, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# rotate_xy edge cases
+# ---------------------------------------------------------------------------
+
+class TestRotateXYEdgeCases:
+    def test_no_xy_moves_returns_equal_copy(self):
+        lines = gl.parse_lines("M104 S200\nG28")
+        result = gl.rotate_xy(lines, 45.0)
+        assert result == lines
+        assert result is not lines
+
+    def test_missing_pivot_y_comes_from_bounds_centre(self):
+        lines = gl.parse_lines("G90\nG1 X0 Y0\nG1 X10 Y20")
+        result = gl.rotate_xy(lines, 180.0, pivot_x=0.0)
+        g1s = [ln for ln in result if ln.command == "G1"]
+        assert (g1s[0].words["X"], g1s[0].words["Y"]) == pytest.approx((0.0, 20.0), abs=1e-3)
+        assert (g1s[1].words["X"], g1s[1].words["Y"]) == pytest.approx((-10.0, 0.0), abs=1e-3)
+
+    def test_missing_pivot_x_comes_from_bounds_centre(self):
+        lines = gl.parse_lines("G90\nG1 X0 Y0\nG1 X10 Y20")
+        result = gl.rotate_xy(lines, 180.0, pivot_y=0.0)
+        g1s = [ln for ln in result if ln.command == "G1"]
+        assert (g1s[0].words["X"], g1s[0].words["Y"]) == pytest.approx((10.0, 0.0), abs=1e-3)
+        assert (g1s[1].words["X"], g1s[1].words["Y"]) == pytest.approx((0.0, -20.0), abs=1e-3)
+
+    def test_absolute_ij_centre_rotates_as_a_point(self):
+        lines = gl.parse_lines("G90\nG90.1\nG1 X10 Y0\nG3 X0 Y10 I0 J0")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=10.0, pivot_y=0.0)
+        arc = gl.parse_line(next(ln for ln in result if ln.is_arc).raw)
+        assert arc.words["X"] == pytest.approx(0.0, abs=1e-3)
+        assert arc.words["Y"] == pytest.approx(-10.0, abs=1e-3)
+        assert arc.words["I"] == pytest.approx(10.0, abs=1e-3)
+        assert arc.words["J"] == pytest.approx(-10.0, abs=1e-3)
+
+    def test_r_arc_in_relative_ij_mode_does_not_inject_ij(self):
+        lines = gl.parse_lines("G90\nG91.1\nG1 X10 Y0\nG3 X0 Y10 R10")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)
+        arc = next(ln for ln in result if ln.is_arc)
+        assert arc.words["X"] == pytest.approx(-10.0, abs=1e-3)
+        assert arc.words["Y"] == pytest.approx(0.0, abs=1e-3)
+        assert arc.words["R"] == pytest.approx(10.0)
+        assert "I" not in arc.words and "J" not in arc.words
+        assert " I" not in arc.raw and " J" not in arc.raw
+
+    def test_bed_validation_without_moves_is_a_noop(self):
+        lines = gl.parse_lines("M104 S200")
+        result = gl.rotate_xy(
+            lines, 0.0, pivot_x=0.0, pivot_y=0.0,
+            bed_min_x=0, bed_max_x=10, bed_min_y=0, bed_max_y=10,
+        )
+        assert result == lines
+
+    def test_bed_validation_leaves_centred_print_in_place(self):
+        lines = gl.parse_lines("G90\nG1 X40 Y40\nG1 X60 Y60")
+        result = gl.rotate_xy(
+            lines, 0.0,
+            bed_min_x=0, bed_max_x=100, bed_min_y=0, bed_max_y=100,
+        )
+        g1s = [ln for ln in result if ln.command == "G1"]
+        assert g1s[0].words["X"] == pytest.approx(40.0, abs=1e-3)
+        assert g1s[1].words["Y"] == pytest.approx(60.0, abs=1e-3)
+
+    def test_partial_axis_move_reaches_rotated_target(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y20\nG1 X30")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)
+        assert _final_xy(result) == pytest.approx((-20.0, 30.0), abs=1e-3)
+
+    def test_partial_y_move_reaches_rotated_target(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y20\nG1 Y30")
+        result = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)
+        assert _final_xy(result) == pytest.approx((-30.0, 10.0), abs=1e-3)
+
+    def test_partial_axis_move_keeps_e_f_and_comment(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y20\nG1 X30 E1.5 F1200 ; wall")
+        moved = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)[2]
+        for token in ("E1.5", "F1200", "; wall"):
+            assert token in moved.raw
+
+    def test_rotated_r_arc_linearizes_onto_the_rotated_circle(self):
+        lines = gl.parse_lines("G90\nG1 X10 Y0\nG3 X0 Y10 R10")
+        rotated = gl.rotate_xy(lines, 90.0, pivot_x=0.0, pivot_y=0.0)
+        for line in gl.linearize_arcs(rotated)[1:]:
+            assert math.hypot(line.words["X"], line.words["Y"]) == pytest.approx(10.0, abs=1e-3)
+
+    @pytest.mark.parametrize(
+        "program, expected_ij",
+        [
+            ("G90\nG1 X10 Y0\nG3 X0 Y10 I-10", (0.0, -10.0)),
+            ("G90\nG1 X0 Y10\nG3 X-10 Y0 J-10", (10.0, 0.0)),
+        ],
+    )
+    def test_arc_with_omitted_ij_word_keeps_centre(self, program, expected_ij):
+        result = gl.rotate_xy(gl.parse_lines(program), 90.0, pivot_x=0.0, pivot_y=0.0)
+        arc = next(ln for ln in result if ln.is_arc)
+        written = gl.parse_line(arc.raw).words
+        assert (arc.words["I"], arc.words["J"]) == pytest.approx(expected_ij, abs=1e-3)
+        assert (written["I"], written["J"]) == pytest.approx(expected_ij, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# translate_xy_allow_arcs edge cases
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "arc_words, expected_ij",
+    [("I5", (8.0, 4.0)), ("J5", (3.0, 9.0)), ("I5 J6", (8.0, 10.0))],
+)
+def test_translate_xy_allow_arcs_absolute_centre_is_shifted(arc_words, expected_ij):
+    lines = gl.parse_lines(f"G90.1\nG2 X10 Y0 {arc_words}")
+    arc = next(ln for ln in gl.translate_xy_allow_arcs(lines, 3.0, 4.0) if ln.is_arc)
+    written = gl.parse_line(arc.raw).words
+    assert (arc.words["I"], arc.words["J"]) == pytest.approx(expected_ij)
+    assert (written["I"], written["J"]) == pytest.approx(expected_ij)
+
+
+def test_translate_xy_allow_arcs_absolute_mode_does_not_inject_ij_into_r_arc():
+    lines = gl.parse_lines("G90.1\nG2 X10 Y0 R5")
+    arc = next(ln for ln in gl.translate_xy_allow_arcs(lines, 3.0, 4.0) if ln.is_arc)
+    assert "I" not in arc.words and "J" not in arc.words
+
+
+def test_translate_xy_allow_arcs_partial_move_after_skipped_region():
+    lines = gl.parse_lines("G90\nG1 X10 Y-1\nG1 Y5")
+    result = gl.translate_xy_allow_arcs(lines, 100.0, 0.0)
+    assert _final_xy(result) == pytest.approx((110.0, 5.0), abs=1e-3)
+
+
+def test_translate_xy_allow_arcs_partial_first_move_gets_both_offsets():
+    result = gl.translate_xy_allow_arcs(gl.parse_lines("G90\nG1 X30"), 5.0, 7.0)
+    assert _final_xy(result) == pytest.approx((35.0, 7.0), abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# apply_xy_transform_by_layer edge cases
+# ---------------------------------------------------------------------------
+
+class TestApplyXYTransformByLayerEdgeCases:
+    def test_skipped_negative_y_move_still_tracks_z(self):
+        lines = gl.parse_lines("G90\nG1 X5 Y-2 Z1.0\nG1 X5 Y5")
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x, z_max=0.5)
+        assert [ln.raw for ln in result] == [ln.raw for ln in lines]
+
+    def test_skipped_negative_y_move_without_z_keeps_layer(self):
+        lines = gl.parse_lines("G90\nG1 X5 Y-2\nG1 X5 Y5")
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x)
+        assert result[1].raw == "G1 X5 Y-2"
+        assert result[2].words["X"] == pytest.approx(105.0)
+
+    def test_skip_negative_y_false_transforms_purge_moves(self):
+        lines = gl.parse_lines("G90\nG1 X5 Y-2")
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x, skip_negative_y=False)
+        assert result[1].words["X"] == pytest.approx(105.0)
+
+    @pytest.mark.parametrize("extrusion_mode", ["M82", "M83"])
+    def test_z_e_f_and_comment_preserved(self, extrusion_mode):
+        lines = gl.parse_lines(f"G90\n{extrusion_mode}\nG1 X1 Y1 Z0.2 E0.5 F1200 ; wall")
+        moved = gl.apply_xy_transform_by_layer(lines, _shift_x)[2]
+        assert moved.words["X"] == pytest.approx(101.0)
+        for token in ("Z0.2", "E0.5", "F1200", "; wall"):
+            assert token in moved.raw
+
+    def test_layers_above_range_are_untouched(self):
+        lines = gl.parse_lines("G90\nG1 X1 Y1 Z0.2\nG1 X2 Y2\nG1 Z1.0\nG1 X4 Y4")
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x, z_max=0.5)
+        xs = [ln.words["X"] for ln in result if "X" in ln.words]
+        assert xs == pytest.approx([101.0, 102.0, 4.0])
+
+    @pytest.mark.parametrize(
+        "bounds, expected_xs",
+        [
+            ({"z_min": 5.0}, [1.0, 110.0, 120.0]),
+            ({"z_max": 0.2}, [101.0, 10.0, 20.0]),
+        ],
+    )
+    def test_combined_xyz_move_follows_iter_layers_membership(self, bounds, expected_xs):
+        lines = gl.parse_lines("G90\nG1 X1 Y1 Z0.2\nG1 X10 Y10 Z5\nG1 X20 Y20")
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x, **bounds)
+        xs = [ln.words["X"] for ln in result if "X" in ln.words]
+        assert xs == pytest.approx(expected_xs)
+
+    def test_selected_lines_match_iter_layers(self):
+        lines = gl.parse_lines(
+            "G90\nG1 X1 Y1\nG1 X2 Y2 Z0.2\nG1 X3 Y3\nG1 X4 Y4 Z0.4\nG1 X5 Y5\nG1 Z0.6\nG1 X6 Y6"
+        )
+        selected = [
+            line.raw
+            for z, group in gl.iter_layers(lines)
+            if 0.2 <= z <= 0.4
+            for line in group
+            if "X" in line.words
+        ]
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x, z_min=0.2, z_max=0.4)
+        changed = [src.raw for src, out in zip(lines, result) if src.raw != out.raw]
+        assert changed == selected
+
+    def test_relative_z_change_is_tracked(self):
+        lines = gl.parse_lines("G91\nG1 Z5\nG90\nG1 X1 Y1")
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x, z_min=5.0)
+        assert result[3].words["X"] == pytest.approx(101.0)
+
+    def test_relative_z_word_is_added_to_the_current_height(self):
+        lines = gl.parse_lines("G90\nG1 Z4\nG91\nG1 X1 Y1 Z1")  # lands at Z=5, above the range
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x, z_max=4.5)
+        assert [line.raw for line in result] == [line.raw for line in lines]
+
+    def test_initial_state_z_sets_the_starting_layer(self):
+        initial = gl.ModalState()
+        initial.z = 5.0
+        lines = gl.parse_lines("G90\nG1 X1 Y1")
+        result = gl.apply_xy_transform_by_layer(lines, _shift_x, z_min=5.0, initial_state=initial)
+        assert result[1].words["X"] == pytest.approx(101.0)
+
+
+# ---------------------------------------------------------------------------
+# Remaining helpers
+# ---------------------------------------------------------------------------
+
+def test_to_absolute_xy_keeps_feedrate_and_arc_offsets():
+    lines = gl.parse_lines("G90\nG1 X10 Y10\nG91\nG1 X5 F1200\nG2 X5 Y5 I2.5 J2.5")
+    result = gl.to_absolute_xy(lines)
+    move = next(ln for ln in result if "F" in ln.words)
+    arc = next(ln for ln in result if ln.is_arc)
+    assert move.words["X"] == pytest.approx(15.0)
+    assert "F1200" in move.raw
+    assert (arc.words["X"], arc.words["Y"]) == pytest.approx((20.0, 15.0))
+    assert (arc.words["I"], arc.words["J"]) == pytest.approx((2.5, 2.5))
+
+
+def test_dist_to_segment_degenerate_segment_is_point_distance():
+    assert gl._dist_to_segment(3.0, 4.0, 0.0, 0.0, 0.0, 0.0) == pytest.approx(5.0)
+
+
+def test_recenter_to_bed_fit_rejects_margin_consuming_the_bed():
+    lines = gl.parse_lines("G90\nG1 X0 Y0\nG1 X10 Y10")
+    with pytest.raises(ValueError, match="zero or negative"):
+        gl.recenter_to_bed(lines, 0, 20, 0, 20, margin=10.0, mode="fit")

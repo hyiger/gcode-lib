@@ -152,6 +152,16 @@ def test_parse_line_comment_only():
     line = gl.parse_line("; just a comment")
     assert line.command == ""
     assert line.comment == "; just a comment"
+    assert not line.is_blank
+
+
+def test_is_blank_true_for_comment_without_text():
+    assert gl.parse_line(";").is_blank
+    assert gl.parse_line(" ;  ").is_blank
+
+
+def test_is_blank_false_for_command():
+    assert not gl.parse_line("G1 X1").is_blank
 
 
 def test_parse_line_strips_trailing_newline():

@@ -5,10 +5,12 @@ from __future__ import annotations
 import math
 import multiprocessing as mp
 import platform
+import queue
 import re
 import secrets
 import struct
 import sys
+import time
 import warnings
 import zlib
 from dataclasses import dataclass
@@ -297,6 +299,9 @@ except ImportError:
 _MODEL_COLOR = (0.93, 0.42, 0.13)
 _SUPERSAMPLE_THRESHOLD: int = 32
 _SUPERSAMPLE_FACTOR: int = 4
+_RENDER_TIMEOUT_S: float = 120.0
+_RENDER_POLL_S: float = 0.1
+_RENDER_EXIT_GRACE_S: float = 5.0
 
 _PRINTER_SETTINGS_IDS: Dict[Tuple[str, str], str] = {
     ("COREONE", "0.25"): "Prusa CORE One 0.25 nozzle",
@@ -613,18 +618,31 @@ def _render_in_subprocess(
         args=(result_queue, stl_path, render_w, render_h, final_w, final_h, needs_downscale),
     )
     proc.start()
-    proc.join(timeout=120)
 
-    if proc.exitcode is None:
+    # Read before joining: the worker cannot exit until a result larger than the
+    # pipe buffer has been consumed, so join() first would hang until the timeout.
+    deadline = time.monotonic() + _RENDER_TIMEOUT_S
+    while True:
+        if time.monotonic() >= deadline:
+            proc.kill()
+            proc.join()
+            raise RuntimeError("VTK render subprocess timed out")
+        # Sampled before the read so a result written just before exit is not missed.
+        worker_alive = proc.is_alive()
+        try:
+            status, data = result_queue.get(timeout=_RENDER_POLL_S)
+            break
+        except queue.Empty:
+            if not worker_alive:
+                raise RuntimeError(
+                    f"VTK render subprocess failed (exit code {proc.exitcode})"
+                )
+
+    proc.join(timeout=_RENDER_EXIT_GRACE_S)
+    if proc.is_alive():
         proc.kill()
-        raise RuntimeError("VTK render subprocess timed out")
+        proc.join()
 
-    if proc.exitcode != 0:
-        raise RuntimeError(
-            f"VTK render subprocess failed (exit code {proc.exitcode})"
-        )
-
-    status, data = result_queue.get_nowait()
     if status == "error":
         raise RuntimeError(f"VTK render failed in subprocess: {data}")
     return data  # type: ignore[return-value]

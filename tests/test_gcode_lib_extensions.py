@@ -19,6 +19,8 @@ from __future__ import annotations
 import math
 import struct
 import subprocess
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1176,3 +1178,186 @@ class TestSliceBatchEdgeCases:
                 config_ini=None,
                 naming="/tmp/{stem}.gcode",
             )
+
+    @pytest.mark.parametrize(
+        "naming, message",
+        [("", "empty filename"), (".", "normal filename"), ("..", "normal filename")],
+    )
+    def test_unusable_filename_rejected(self, tmp_path, naming, message):
+        with pytest.raises(ValueError, match=message):
+            gl.slice_batch("/fake/slicer", ["model.stl"], str(tmp_path), None, naming=naming)
+
+    def test_parallel_worker_errors_propagate(self, tmp_path):
+        with pytest.raises(ValueError, match="empty filename"):
+            gl.slice_batch(
+                "/fake/slicer", ["a.stl", "b.stl"], str(tmp_path), None,
+                naming="", parallelism=2,
+            )
+
+
+# ---------------------------------------------------------------------------
+# PrusaSlicer CLI — successful runs
+# ---------------------------------------------------------------------------
+
+def _completed(stdout: str = "", stderr: str = "", returncode: int = 0) -> MagicMock:
+    return MagicMock(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+def _output_path(cmd) -> str:
+    return cmd[cmd.index("--output") + 1]
+
+
+HELP_TEXT = (
+    "PrusaSlicer-2.8.1+MacOS-arm64 based on Slic3r\n"
+    "  --export-gcode  Slice and export\n"
+    "  --load ABCD     Load configuration\n"
+    "  --help-fff      Show FFF options\n"
+    "  --binary-gcode  Write binary G-code\n"
+)
+
+
+class TestProbePrusaSlicerCapabilities:
+    def test_parses_version_and_flags(self):
+        replies = [_completed(HELP_TEXT), _completed("fff options\n")]
+        with patch("gcode_lib.subprocess.run", side_effect=replies) as run:
+            caps = gl.probe_prusaslicer_capabilities("/fake/slicer")
+        assert [call.args[0] for call in run.call_args_list] == [
+            ["/fake/slicer", "--help"],
+            ["/fake/slicer", "--help-fff"],
+        ]
+        assert caps.version_text == "PrusaSlicer-2.8.1+MacOS-arm64"
+        assert caps.has_export_gcode
+        assert caps.has_load_config
+        assert caps.has_help_fff
+        assert caps.supports_binary_gcode
+        assert caps.raw_help == HELP_TEXT
+        assert caps.raw_help_fff == "fff options\n"
+
+    def test_help_on_stderr_is_read(self):
+        with patch("gcode_lib.subprocess.run", return_value=_completed(stderr="PrusaSlicer 2.7.0\n")):
+            caps = gl.probe_prusaslicer_capabilities("/fake/slicer")
+        assert caps.version_text == "PrusaSlicer 2.7.0"
+
+    def test_short_export_flag_is_recognised(self):
+        with patch("gcode_lib.subprocess.run", return_value=_completed("usage: -g file\n")):
+            assert gl.probe_prusaslicer_capabilities("/fake/slicer").has_export_gcode
+
+    def test_unrecognised_help_gives_empty_capabilities(self):
+        with patch("gcode_lib.subprocess.run", return_value=_completed("nothing here\n")) as run:
+            caps = gl.probe_prusaslicer_capabilities("/fake/slicer")
+        assert run.call_count == 1
+        assert caps.version_text == "unknown"
+        assert not any(
+            [caps.has_export_gcode, caps.has_load_config, caps.has_help_fff,
+             caps.supports_binary_gcode]
+        )
+        assert caps.raw_help_fff is None
+
+    @pytest.mark.parametrize(
+        "failure", [subprocess.TimeoutExpired(cmd=["fake"], timeout=30), OSError("gone")],
+    )
+    def test_help_fff_failure_is_tolerated(self, failure):
+        with patch("gcode_lib.subprocess.run", side_effect=[_completed(HELP_TEXT), failure]):
+            caps = gl.probe_prusaslicer_capabilities("/fake/slicer")
+        assert caps.has_help_fff
+        assert caps.raw_help_fff is None
+
+
+class TestSliceModelArguments:
+    def test_full_command(self):
+        req = gl.SliceRequest("m.stl", "o.gcode", "p.ini", extra_args=["--dont-arrange"])
+        with patch("gcode_lib.subprocess.run", return_value=_completed()) as run:
+            result = gl.slice_model("/fake/slicer", req)
+        assert run.call_args[0][0] == [
+            "/fake/slicer", "--load", "p.ini", "--printer-technology", "FFF",
+            "--export-gcode", "--output", "o.gcode", "--dont-arrange", "m.stl",
+        ]
+        assert result.ok
+
+    def test_optional_arguments_omitted(self):
+        req = gl.SliceRequest("m.stl", "o.gcode", None, printer_technology="")
+        with patch("gcode_lib.subprocess.run", return_value=_completed()) as run:
+            gl.slice_model("/fake/slicer", req)
+        assert run.call_args[0][0] == [
+            "/fake/slicer", "--export-gcode", "--output", "o.gcode", "m.stl",
+        ]
+
+
+class TestSliceBatchRuns:
+    @staticmethod
+    def _echo_output(cmd, **kwargs):
+        return _completed(stdout=_output_path(cmd))
+
+    def test_serial_batch_creates_directory_and_names_outputs(self, tmp_path):
+        out_dir = tmp_path / "nested" / "out"
+        with patch("gcode_lib.subprocess.run", side_effect=self._echo_output) as run:
+            results = gl.slice_batch(
+                "/fake/slicer", ["a/one.stl", "b/two.3mf"], str(out_dir), "p.ini",
+            )
+        assert out_dir.is_dir()
+        assert [r.stdout for r in results] == [
+            str(out_dir / "one.gcode"), str(out_dir / "two.gcode"),
+        ]
+        assert all("p.ini" in call.args[0] for call in run.call_args_list)
+
+    def test_unknown_placeholder_is_kept_in_filename(self, tmp_path):
+        with patch("gcode_lib.subprocess.run", side_effect=self._echo_output):
+            results = gl.slice_batch(
+                "/fake/slicer", ["one.stl"], str(tmp_path), None, naming="{stem}_{other}.gcode",
+            )
+        assert results[0].stdout == str(tmp_path / "one_{other}.gcode")
+
+    def test_parallel_results_keep_input_order(self, tmp_path):
+        def slow_first(cmd, **kwargs):
+            if cmd[-1] == "first.stl":
+                time.sleep(0.05)
+            return _completed(stdout=cmd[-1])
+
+        with patch("gcode_lib.subprocess.run", side_effect=slow_first):
+            results = gl.slice_batch(
+                "/fake/slicer", ["first.stl", "second.stl"], str(tmp_path), None, parallelism=2,
+            )
+        assert [r.stdout for r in results] == ["first.stl", "second.stl"]
+
+
+class TestFindPrusaSlicerSearchOrder:
+    MACOS = gl._prusaslicer._PS_PATHS_MACOS
+    WINDOWS = gl._prusaslicer._PS_PATHS_WIN
+
+    @staticmethod
+    def _find(platform, existing, on_path=None, **kwargs):
+        on_path = on_path or {}
+        with patch("gcode_lib._prusaslicer.sys.platform", platform), \
+             patch("gcode_lib.os.path.isfile", side_effect=lambda path: path in existing), \
+             patch("gcode_lib.shutil.which", side_effect=on_path.get):
+            return gl.find_prusaslicer_executable(**kwargs)
+
+    def test_macos_prefers_console(self):
+        assert self._find("darwin", self.MACOS[:2]) == self.MACOS[0]
+
+    def test_macos_prefers_gui_on_request(self):
+        assert self._find("darwin", self.MACOS[:2], prefer_console=False) == self.MACOS[1]
+
+    def test_windows_prefers_console(self):
+        assert self._find("win32", self.WINDOWS[:2]) == self.WINDOWS[0]
+
+    def test_windows_prefers_gui_on_request(self):
+        assert self._find("win32", self.WINDOWS[:2], prefer_console=False) == self.WINDOWS[1]
+
+    def test_path_search_honours_console_preference(self):
+        on_path = {
+            "prusa-slicer-console": "/usr/bin/prusa-slicer-console",
+            "prusa-slicer": "/usr/bin/prusa-slicer",
+        }
+        existing = list(on_path.values())
+        assert self._find("linux", existing, on_path) == "/usr/bin/prusa-slicer-console"
+        assert self._find("linux", existing, on_path, prefer_console=False) == "/usr/bin/prusa-slicer"
+
+    def test_well_known_path_beats_path_search(self):
+        on_path = {"prusa-slicer-console": "/opt/prusa-slicer-console"}
+        existing = [self.MACOS[0], "/opt/prusa-slicer-console"]
+        assert self._find("darwin", existing, on_path) == self.MACOS[0]
+
+    def test_path_entry_that_is_not_a_file_is_rejected(self):
+        with pytest.raises(FileNotFoundError):
+            self._find("linux", [], {"prusa-slicer": "/usr/bin/prusa-slicer"})

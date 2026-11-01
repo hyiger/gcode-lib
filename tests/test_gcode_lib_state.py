@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -285,3 +286,172 @@ def test_iter_extruding_retraction_excluded():
     lines = gl.parse_lines("M82\nG1 X0 Y0 E1.0\nG1 X0 Y0 E0.5")  # E decreasing
     ext = list(gl.iter_extruding(lines))
     assert len(ext) == 1
+
+
+# ---------------------------------------------------------------------------
+# linearize_arc_points
+# ---------------------------------------------------------------------------
+
+QUARTER_ARC = {"X": 0.0, "Y": 10.0, "I": -10.0, "J": 0.0}
+
+
+def _state_at(x: float, y: float, **modes) -> gl.ModalState:
+    state = gl.ModalState(**modes)
+    state.x = x
+    state.y = y
+    return state
+
+
+def _assert_on_circle(points, cx: float, cy: float, radius: float) -> None:
+    for x, y in points:
+        assert math.hypot(x - cx, y - cy) == pytest.approx(radius, abs=1e-6)
+
+
+def test_linearize_arc_points_ccw_quarter():
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0), QUARTER_ARC, cw=False)
+    _assert_on_circle(pts, 0.0, 0.0, 10.0)
+    assert pts[-1] == (0.0, 10.0)
+    assert all(b[1] > a[1] for a, b in zip(pts, pts[1:]))
+
+
+def test_linearize_arc_points_cw_quarter():
+    words = {"X": 10.0, "Y": 0.0, "I": 0.0, "J": -10.0}
+    pts = gl.linearize_arc_points(_state_at(0.0, 10.0), words, cw=True)
+    _assert_on_circle(pts, 0.0, 0.0, 10.0)
+    assert pts[-1] == (10.0, 0.0)
+    assert all(b[0] > a[0] for a, b in zip(pts, pts[1:]))
+
+
+def test_linearize_arc_points_direction_selects_the_long_way_round():
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0), QUARTER_ARC, cw=True)
+    _assert_on_circle(pts, 0.0, 0.0, 10.0)
+    assert min(x for x, _ in pts) == pytest.approx(-10.0, abs=0.05)
+    assert min(y for _, y in pts) == pytest.approx(-10.0, abs=0.05)
+    assert pts[-1] == (0.0, 10.0)
+
+
+@pytest.mark.parametrize("cw, first_y_sign", [(False, 1), (True, -1)])
+def test_linearize_arc_points_full_circle(cw, first_y_sign):
+    words = {"X": 10.0, "Y": 0.0, "I": -10.0, "J": 0.0}
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0), words, cw=cw)
+    _assert_on_circle(pts, 0.0, 0.0, 10.0)
+    assert pts[0][1] * first_y_sign > 0
+    assert pts[-1] == (10.0, 0.0)
+    path = [(10.0, 0.0)] + pts
+    length = sum(math.dist(a, b) for a, b in zip(path, path[1:]))
+    assert length == pytest.approx(2 * math.pi * 10.0, rel=1e-3)
+
+
+def test_linearize_arc_points_omitted_endpoint_is_full_circle():
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0), {"I": -10.0, "J": 0.0}, cw=False)
+    assert min(x for x, _ in pts) == pytest.approx(-10.0, abs=0.05)
+    assert pts[-1] == (10.0, 0.0)
+
+
+def test_linearize_arc_points_seg_mm_limits_chord_length():
+    pts = gl.linearize_arc_points(
+        _state_at(10.0, 0.0), QUARTER_ARC, cw=False, seg_mm=1.0, max_deg=360.0,
+    )
+    assert len(pts) == 16  # ceil(15.708 mm arc / 1 mm)
+    path = [(10.0, 0.0)] + pts
+    assert all(math.dist(a, b) <= 1.0 for a, b in zip(path, path[1:]))
+
+
+def test_linearize_arc_points_max_deg_limits_sweep():
+    pts = gl.linearize_arc_points(
+        _state_at(10.0, 0.0), QUARTER_ARC, cw=False, seg_mm=1000.0, max_deg=20.0,
+    )
+    assert len(pts) == 5  # ceil(90 deg / 20 deg)
+
+
+def test_linearize_arc_points_finer_limit_wins():
+    pts = gl.linearize_arc_points(
+        _state_at(10.0, 0.0), QUARTER_ARC, cw=False, seg_mm=1.0, max_deg=4.0,
+    )
+    assert len(pts) == 23  # ceil(90 deg / 4 deg) beats 16 chord-length steps
+
+
+def test_linearize_arc_points_limits_disabled_gives_single_point():
+    pts = gl.linearize_arc_points(
+        _state_at(10.0, 0.0), QUARTER_ARC, cw=False, seg_mm=0.0, max_deg=0.0,
+    )
+    assert pts == [(0.0, 10.0)]
+
+
+def test_linearize_arc_points_endpoint_snapped_when_radii_disagree():
+    words = {"X": 0.0, "Y": 10.2, "I": -10.0, "J": 0.0}
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0), words, cw=False)
+    assert pts[-1] == (0.0, 10.2)
+
+
+def test_linearize_arc_points_absolute_ij():
+    words = {"X": 0.0, "Y": 10.0, "I": 0.0, "J": 0.0}
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0, ij_relative=False), words, cw=False)
+    _assert_on_circle(pts, 0.0, 0.0, 10.0)
+    assert pts[-1] == (0.0, 10.0)
+
+
+def test_linearize_arc_points_relative_xy_endpoint():
+    words = {"X": -10.0, "Y": 10.0, "I": -10.0, "J": 0.0}
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0, abs_xy=False), words, cw=False)
+    _assert_on_circle(pts, 0.0, 0.0, 10.0)
+    assert pts[-1] == (0.0, 10.0)
+
+
+def test_linearize_arc_points_zero_radius_returns_endpoint():
+    words = {"X": 5.0, "Y": 5.0, "I": 0.0, "J": 0.0}
+    assert gl.linearize_arc_points(_state_at(5.0, 5.0), words, cw=False) == [(5.0, 5.0)]
+
+
+def test_linearize_arc_points_does_not_mutate_state():
+    state = _state_at(10.0, 0.0)
+    before = state.copy()
+    gl.linearize_arc_points(state, QUARTER_ARC, cw=False)
+    assert state == before
+
+
+@pytest.mark.parametrize(
+    "start, end, radius, cw, centre",
+    [
+        pytest.param((10.0, 0.0), (0.0, 10.0), 10.0, False, (0.0, 0.0), id="ccw-minor"),
+        pytest.param((0.0, 10.0), (10.0, 0.0), 10.0, True, (0.0, 0.0), id="cw-minor"),
+        pytest.param((10.0, 0.0), (0.0, 10.0), -10.0, False, (10.0, 10.0), id="ccw-major"),
+        pytest.param((0.0, 10.0), (10.0, 0.0), -10.0, True, (10.0, 10.0), id="cw-major"),
+    ],
+)
+def test_linearize_arc_points_r_format(start, end, radius, cw, centre):
+    words = {"X": end[0], "Y": end[1], "R": radius}
+    pts = gl.linearize_arc_points(_state_at(*start), words, cw=cw)
+    _assert_on_circle(pts, *centre, 10.0)
+    assert pts[-1] == end
+
+
+def test_linearize_arc_points_negative_r_sweeps_the_long_way():
+    words = {"X": 0.0, "Y": 10.0, "R": -10.0}
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0), words, cw=False)
+    assert max(x for x, _ in pts) == pytest.approx(20.0, abs=0.05)
+    assert max(y for _, y in pts) == pytest.approx(20.0, abs=0.05)
+
+
+def test_linearize_arc_points_r_format_relative_xy():
+    words = {"X": -10.0, "Y": 10.0, "R": 10.0}
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0, abs_xy=False), words, cw=False)
+    _assert_on_circle(pts, 0.0, 0.0, 10.0)
+    assert pts[-1] == (0.0, 10.0)
+
+
+def test_linearize_arc_points_r_too_short_becomes_semicircle():
+    words = {"X": 10.0, "Y": 0.0, "R": 1.0}
+    pts = gl.linearize_arc_points(_state_at(0.0, 0.0), words, cw=False)
+    _assert_on_circle(pts, 5.0, 0.0, 5.0)
+
+
+def test_linearize_arc_points_r_with_coincident_endpoints_returns_endpoint():
+    words = {"X": 5.0, "Y": 5.0, "R": 3.0}
+    assert gl.linearize_arc_points(_state_at(5.0, 5.0), words, cw=False) == [(5.0, 5.0)]
+
+
+def test_linearize_arc_points_ij_takes_priority_over_r():
+    words = {"X": 0.0, "Y": 10.0, "I": -10.0, "J": 0.0, "R": 99.0}
+    pts = gl.linearize_arc_points(_state_at(10.0, 0.0), words, cw=False)
+    _assert_on_circle(pts, 0.0, 0.0, 10.0)

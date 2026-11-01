@@ -4,6 +4,7 @@ with binary .bgcode thumbnails."""
 from __future__ import annotations
 
 import base64
+import queue
 import struct
 import sys
 import zlib
@@ -652,3 +653,308 @@ class TestRebuildSlicerMetaBlock:
         text = payload.decode("utf-8")
         assert "printer_settings_id=Prusa CORE One HF0.6 nozzle" in text
         assert "some_key=foo" in text
+
+
+class TestParseThumbnailEdgeCases:
+    def test_base64_line_without_space_after_semicolon(self):
+        b64 = base64.b64encode(PNG_DATA).decode("ascii")
+        text = f"; thumbnail begin 8x8 {len(b64)}\n;{b64}\n; thumbnail end\n" + GCODE_BODY
+        assert gl.from_text(text).thumbnails[0].data == PNG_DATA
+
+    def test_unknown_keyword_and_unknown_magic_defaults_to_png(self):
+        data = b"\x00" * 16
+        b64 = base64.b64encode(data).decode("ascii")
+        text = f"; thumbnail_WEBP begin 8x8 {len(b64)}\n; {b64}\n; thumbnail_WEBP end\n"
+        assert gl.from_text(text).thumbnails[0].format_code == gl._IMG_PNG
+
+    def test_spec_empty_segment_is_skipped(self):
+        specs = gl.parse_thumbnail_specs("16x16/PNG,,32x32/PNG")
+        assert [spec.width for spec in specs] == [16, 32]
+
+    def test_spec_non_integer_dimensions_warn(self):
+        with pytest.warns(UserWarning, match="invalid thumbnail spec"):
+            assert gl.parse_thumbnail_specs("axb/PNG") == []
+
+
+macos_subprocess_render = pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="only macOS renders in a subprocess; in-process VTK can crash a headless host",
+)
+
+
+def _png_size(png: bytes) -> tuple:
+    return struct.unpack(">II", png[16:24])
+
+
+def _write_tetrahedron_stl(path: Path) -> None:
+    corners = [(0, 0, 0), (10, 0, 0), (0, 10, 0), (0, 0, 10)]
+    faces = [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)]
+    data = bytearray(b"\x00" * 80 + struct.pack("<I", len(faces)))
+    for face in faces:
+        data += struct.pack("<3f", 0.0, 0.0, 0.0)
+        for index in face:
+            data += struct.pack("<3f", *corners[index])
+        data += struct.pack("<H", 0)
+    path.write_bytes(bytes(data))
+
+
+class TestRenderStlToPng:
+    def test_requires_vtk(self, tmp_path):
+        with patch("gcode_lib._presets._HAS_VTK", False):
+            with pytest.raises(RuntimeError, match="VTK is not installed"):
+                gl.render_stl_to_png(str(tmp_path / "m.stl"), 16, 16)
+
+    def test_missing_stl_raises(self, tmp_path):
+        with patch("gcode_lib._presets._HAS_VTK", True):
+            with pytest.raises(FileNotFoundError):
+                gl.render_stl_to_png(str(tmp_path / "missing.stl"), 16, 16)
+
+    @pytest.mark.parametrize(
+        "size, expected_args",
+        [
+            ((16, 16), (64, 64, 16, 16, True)),
+            ((16, 128), (64, 512, 16, 128, True)),
+            ((32, 32), (128, 128, 32, 32, True)),
+            ((33, 33), (33, 33, 33, 33, False)),
+        ],
+    )
+    def test_small_sizes_are_supersampled(self, tmp_path, size, expected_args):
+        stl = tmp_path / "m.stl"
+        stl.write_bytes(b"")
+        with patch("gcode_lib._presets._HAS_VTK", True), \
+             patch("gcode_lib._presets._needs_subprocess_render", return_value=False), \
+             patch("gcode_lib._presets._render_vtk", return_value=b"png") as render:
+            assert gl.render_stl_to_png(str(stl), *size) == b"png"
+        render.assert_called_once_with(str(stl), *expected_args)
+
+    def test_subprocess_used_when_required(self, tmp_path):
+        stl = tmp_path / "m.stl"
+        stl.write_bytes(b"")
+        with patch("gcode_lib._presets._HAS_VTK", True), \
+             patch("gcode_lib._presets._needs_subprocess_render", return_value=True), \
+             patch("gcode_lib._presets._render_vtk") as direct, \
+             patch("gcode_lib._presets._render_in_subprocess", return_value=b"png"):
+            assert gl.render_stl_to_png(str(stl), 64, 64) == b"png"
+        direct.assert_not_called()
+
+    def test_subprocess_failure_falls_back_with_warning(self, tmp_path):
+        stl = tmp_path / "m.stl"
+        stl.write_bytes(b"")
+        with patch("gcode_lib._presets._HAS_VTK", True), \
+             patch("gcode_lib._presets._needs_subprocess_render", return_value=True), \
+             patch("gcode_lib._presets._render_in_subprocess", side_effect=RuntimeError("boom")):
+            with pytest.warns(UserWarning, match="using fallback thumbnail"):
+                png = gl.render_stl_to_png(str(stl), 24, 12)
+        assert png.startswith(b"\x89PNG")
+        assert _png_size(png) == (24, 12)
+
+    @macos_subprocess_render
+    @pytest.mark.parametrize("size", [(16, 16), (64, 48)])
+    def test_real_vtk_render(self, tmp_path, size):
+        pytest.importorskip("vtk")
+        stl = tmp_path / "tetrahedron.stl"
+        _write_tetrahedron_stl(stl)
+        with _warnings_mod.catch_warnings():
+            _warnings_mod.simplefilter("error")  # the fallback path warns
+            png = gl.render_stl_to_png(str(stl), *size)
+        assert _png_size(png) == size
+
+    @macos_subprocess_render
+    def test_real_render_larger_than_the_pipe_buffer(self, tmp_path):
+        vtk = pytest.importorskip("vtk")
+        stl = tmp_path / "sphere.stl"
+        sphere = vtk.vtkSphereSource()
+        sphere.SetThetaResolution(60)
+        sphere.SetPhiResolution(60)
+        writer = vtk.vtkSTLWriter()
+        writer.SetFileName(str(stl))
+        writer.SetFileTypeToBinary()
+        writer.SetInputConnection(sphere.GetOutputPort())
+        writer.Write()
+
+        with _warnings_mod.catch_warnings():
+            _warnings_mod.simplefilter("error")  # the fallback path warns
+            png = gl.render_stl_to_png(str(stl), 2400, 2400)
+        assert len(png) > 128 * 1024  # otherwise this no longer exercises a full pipe
+        assert _png_size(png) == (2400, 2400)
+
+
+def _fake_spawn(exitcode, item=None):
+    """Return a fake multiprocessing context and the order of join/get calls."""
+    events = []
+
+    def record_get(*args, **kwargs):
+        if item is None:
+            raise queue.Empty
+        events.append("get")
+        return item
+
+    result_queue = MagicMock()
+    result_queue.get.side_effect = record_get
+    process = MagicMock(exitcode=exitcode)
+    process.is_alive.return_value = exitcode is None
+    process.join.side_effect = lambda *args, **kwargs: events.append("join")
+    context = MagicMock()
+    context.Queue.return_value = result_queue
+    context.Process.return_value = process
+    return context, process, events
+
+
+class TestRenderInSubprocess:
+    ARGS = ("m.stl", 8, 8, 8, 8, False)
+
+    def test_returns_rendered_bytes(self):
+        context, _, _ = _fake_spawn(0, ("ok", b"png"))
+        with patch("gcode_lib._presets.mp.get_context", return_value=context):
+            assert gl._presets._render_in_subprocess(*self.ARGS) == b"png"
+
+    def test_timeout_kills_process(self):
+        context, process, _ = _fake_spawn(None)
+        with patch("gcode_lib._presets.mp.get_context", return_value=context), \
+             patch("gcode_lib._presets._RENDER_TIMEOUT_S", 0.01):
+            with pytest.raises(RuntimeError, match="timed out"):
+                gl._presets._render_in_subprocess(*self.ARGS)
+        process.kill.assert_called_once()
+
+    @pytest.mark.parametrize("exitcode", [3, 0])
+    def test_exit_without_result_raises(self, exitcode):
+        context, _, _ = _fake_spawn(exitcode)
+        with patch("gcode_lib._presets.mp.get_context", return_value=context):
+            with pytest.raises(RuntimeError, match=f"exit code {exitcode}"):
+                gl._presets._render_in_subprocess(*self.ARGS)
+
+    def test_result_is_kept_when_worker_crashes_during_teardown(self):
+        context, _, _ = _fake_spawn(139, ("ok", b"png"))
+        with patch("gcode_lib._presets.mp.get_context", return_value=context):
+            assert gl._presets._render_in_subprocess(*self.ARGS) == b"png"
+
+    def test_worker_stuck_after_result_is_killed(self):
+        context, process, _ = _fake_spawn(None, ("ok", b"png"))
+        with patch("gcode_lib._presets.mp.get_context", return_value=context):
+            assert gl._presets._render_in_subprocess(*self.ARGS) == b"png"
+        process.kill.assert_called_once()
+
+    def test_worker_error_is_reported(self):
+        context, _, _ = _fake_spawn(0, ("error", "no GL context"))
+        with patch("gcode_lib._presets.mp.get_context", return_value=context):
+            with pytest.raises(RuntimeError, match="no GL context"):
+                gl._presets._render_in_subprocess(*self.ARGS)
+
+    def test_queue_is_drained_before_join(self):
+        context, _, events = _fake_spawn(0, ("ok", b"png"))
+        with patch("gcode_lib._presets.mp.get_context", return_value=context):
+            gl._presets._render_in_subprocess(*self.ARGS)
+        assert events.index("get") < events.index("join")
+
+    def test_worker_reports_success(self):
+        queue = MagicMock()
+        with patch("gcode_lib._presets._render_vtk", return_value=b"png"):
+            gl._presets._subprocess_render_worker(queue, *self.ARGS)
+        queue.put.assert_called_once_with(("ok", b"png"))
+
+    def test_worker_reports_exception(self):
+        queue = MagicMock()
+        with patch("gcode_lib._presets._render_vtk", side_effect=ValueError("bad stl")):
+            gl._presets._subprocess_render_worker(queue, *self.ARGS)
+        queue.put.assert_called_once_with(("error", "bad stl"))
+
+
+def _bgcode_gf(blocks=None) -> gl.GCodeFile:
+    return gl.GCodeFile(
+        lines=[], thumbnails=[], source_format="bgcode",
+        _bgcode_nongcode_blocks=[] if blocks is None else blocks,
+    )
+
+
+def _empty_block(btype: int) -> bytes:
+    return struct.pack("<HHI", btype, 0, 0) + struct.pack("<I", 0)
+
+
+class TestInjectThumbnailsEdgeCases:
+    @patch("gcode_lib.render_stl_to_png")
+    def test_empty_spec_renders_nothing(self, mock_render):
+        gf = _bgcode_gf()
+        gl.inject_thumbnails(gf, "/fake/m.stl", "")
+        mock_render.assert_not_called()
+        assert gf.thumbnails == []
+
+    @patch("gcode_lib.render_stl_to_png", return_value=PNG_DATA)
+    def test_blocks_go_after_metadata_in_spec_order(self, _mock_render):
+        file_meta, printer_meta, slicer_meta = map(_empty_block, (0, 3, 2))
+        gf = _bgcode_gf([file_meta, printer_meta, slicer_meta])
+        gl.inject_thumbnails(gf, "/fake/m.stl", "16x16,32x32")
+        blocks = gf._bgcode_nongcode_blocks
+        assert [struct.unpack_from("<H", b)[0] for b in blocks] == [0, 3, 5, 5, 2]
+        assert [t.width for t in gf.thumbnails] == [16, 32]
+        assert blocks[2] == gl.build_thumbnail_block(PNG_DATA, 16, 16)
+
+    @patch("gcode_lib.render_stl_to_png", side_effect=[PNG_DATA, RuntimeError("boom")])
+    def test_partial_failure_warns_and_changes_nothing(self, _mock_render):
+        gf = _bgcode_gf()
+        with pytest.warns(UserWarning, match="Thumbnail injection failed: boom"):
+            gl.inject_thumbnails(gf, "/fake/m.stl", "16x16,32x32")
+        assert gf.thumbnails == []
+        assert gf._bgcode_nongcode_blocks == []
+
+    @patch("gcode_lib.render_stl_to_png", return_value=PNG_DATA)
+    def test_verbose_logging(self, _mock_render, capsys):
+        gf = _bgcode_gf()
+        gl.inject_thumbnails(gf, "/fake/m.stl", "16x16", verbose=True)
+        assert "Injected 1 thumbnail(s)" in capsys.readouterr().out
+        gl.inject_thumbnails(gf, "/fake/m.stl", "16x16", verbose=True)
+        assert "already present" in capsys.readouterr().out
+
+
+def _slicer_block(payload: bytes, comp: int = 0) -> bytes:
+    params = struct.pack("<H", 0)
+    if comp == 0:
+        body = struct.pack("<HHI", 2, comp, len(payload)) + params + payload
+    else:
+        body = struct.pack("<HHII", 2, comp, len(payload), len(payload)) + params + payload
+    return body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
+
+
+class TestPatchSlicerMetadataEdgeCases:
+    def test_missing_keys_are_appended_with_valid_crc(self):
+        gf = _bgcode_gf([_slicer_block(b"other=1\n")])
+        gl.patch_slicer_metadata(gf, "COREONE", 0.4)
+        patched = gf._bgcode_nongcode_blocks[0]
+        _, _, size = struct.unpack_from("<HHI", patched, 0)
+        text = patched[10:10 + size].decode("utf-8")
+        assert text.splitlines() == [
+            "other=1",
+            "printer_settings_id=Prusa CORE One HF0.4 nozzle",
+            "printer_model=COREONE",
+        ]
+        assert struct.unpack("<I", patched[-4:])[0] == zlib.crc32(patched[:-4]) & 0xFFFFFFFF
+
+    def test_no_blocks_is_a_noop(self):
+        gf = _bgcode_gf()
+        gl.patch_slicer_metadata(gf, "COREONE", 0.4)
+        assert gf._bgcode_nongcode_blocks == []
+
+    def test_no_slicer_block_is_a_noop(self):
+        printer_meta = _empty_block(3)
+        gf = _bgcode_gf([printer_meta])
+        gl.patch_slicer_metadata(gf, "COREONE", 0.4)
+        assert gf._bgcode_nongcode_blocks == [printer_meta]
+
+    def test_unsupported_compression_is_left_unchanged(self):
+        block = _slicer_block(b"printer_model=\n", comp=gl._COMP_HEATSHRINK_12_4)
+        gf = _bgcode_gf([block])
+        gl.patch_slicer_metadata(gf, "COREONE", 0.4)
+        assert gf._bgcode_nongcode_blocks == [block]
+
+    def test_undecodable_payload_warns_and_keeps_block(self):
+        block = _slicer_block(b"\xff\xfe")
+        gf = _bgcode_gf([block])
+        with pytest.warns(UserWarning, match="Slicer metadata patch failed"):
+            gl.patch_slicer_metadata(gf, "COREONE", 0.4)
+        assert gf._bgcode_nongcode_blocks == [block]
+
+    def test_verbose_logging(self, capsys):
+        gl.patch_slicer_metadata(_bgcode_gf(), "UNKNOWN", 0.4, verbose=True)
+        assert "No printer_settings_id mapping" in capsys.readouterr().out
+        gf = _bgcode_gf([_slicer_block(b"printer_model=\n")])
+        gl.patch_slicer_metadata(gf, "COREONE", 0.4, verbose=True)
+        assert "Patched printer_settings_id" in capsys.readouterr().out
