@@ -22,6 +22,9 @@ class ModalState:
     z: float = 0.0
     e: float = 0.0
     f: Optional[float] = None
+    a: float = 0.0
+    b: float = 0.0
+    c: float = 0.0
 
     def copy(self) -> "ModalState":
         """Return an independent copy of this state."""
@@ -30,6 +33,7 @@ class ModalState:
             abs_e=self.abs_e,
             ij_relative=self.ij_relative,
             x=self.x, y=self.y, z=self.z,
+            a=self.a, b=self.b, c=self.c,
             e=self.e, f=self.f,
         )
 

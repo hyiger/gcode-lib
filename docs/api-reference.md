@@ -45,6 +45,9 @@
 | `z` | `float` | `0.0` | Current Z position |
 | `e` | `float` | `0.0` | Current E accumulator |
 | `f` | `Optional[float]` | `None` | Current feedrate (None until first F seen) |
+| `a` | `float` | `0.0` | Current A rotary position |
+| `b` | `float` | `0.0` | Current B rotary position |
+| `c` | `float` | `0.0` | Current C rotary position |
 
 ### `GCodeFile`
 

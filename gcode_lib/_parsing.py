@@ -63,7 +63,7 @@ def parse_words(code: str) -> Dict[str, float]:
     """Parse axis words from a G-code command string.
 
     Returns a ``{axis: value}`` dict for every recognised axis letter
-    (X/Y/Z/E/F/I/J/K/R) found in *code*.  Letter keys are always uppercase.
+    (X/Y/Z/A/B/C/E/F/I/J/K/R) found in *code*.  Letter keys are always uppercase.
 
     >>> parse_words("G1 X10.5 Y-3 E0.1")
     {'X': 10.5, 'Y': -3.0, 'E': 0.1}

@@ -138,6 +138,75 @@ def test_advance_state_f_updated():
 # advance_state — G92 position reset
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# advance_state — rotational axes A, B, C
+# ---------------------------------------------------------------------------
+
+def test_advance_state_rotational_axes_abs():
+    st = _state_after("G90\nG1 X0 Y0 A30 B45 C60")
+    assert st.a == pytest.approx(30.0)
+    assert st.b == pytest.approx(45.0)
+    assert st.c == pytest.approx(60.0)
+
+
+def test_advance_state_rotational_axes_partial():
+    st = _state_after("G90\nG1 A10\nG1 B20")
+    assert st.a == pytest.approx(10.0)
+    assert st.b == pytest.approx(20.0)
+    assert st.c == pytest.approx(0.0)
+
+
+def test_advance_state_rotational_axes_relative():
+    st = _state_after("G91\nG1 A10 B20 C30")
+    assert st.a == pytest.approx(10.0)
+    assert st.b == pytest.approx(20.0)
+    assert st.c == pytest.approx(30.0)
+
+
+def test_advance_state_rotational_axes_relative_accumulate():
+    st = _state_after("G91\nG1 A10\nG1 A15")
+    assert st.a == pytest.approx(25.0)
+
+
+def test_advance_state_g92_rotational():
+    st = _state_after("G90\nG1 A45 B90\nG92 A0 B0")
+    assert st.a == pytest.approx(0.0)
+    assert st.b == pytest.approx(0.0)
+    assert st.c == pytest.approx(0.0)
+
+
+def test_advance_state_rotational_on_arc():
+    st = _state_after("G90\nG1 X0 Y0\nG2 X10 Y0 I5 J0 A90")
+    assert st.a == pytest.approx(90.0)
+
+
+def test_advance_state_all_rotational_axes_on_absolute_arc():
+    st = _state_after("G90\nG2 X10 Y0 I5 J0 A1 B2 C3")
+    assert (st.a, st.b, st.c) == pytest.approx((1.0, 2.0, 3.0))
+
+
+def test_advance_state_all_rotational_axes_on_relative_arc():
+    st = _state_after("G91\nG1 A10 B1 C2\nG2 X10 Y0 I5 J0 A90 B2 C3")
+    assert (st.a, st.b, st.c) == pytest.approx((100.0, 3.0, 5.0))
+
+
+def test_modal_state_copy_keeps_rotational_axes():
+    original = gl.ModalState(a=1.0, b=2.0, c=3.0)
+    duplicate = original.copy()
+    original.a = 9.0
+    assert (duplicate.a, duplicate.b, duplicate.c) == (1.0, 2.0, 3.0)
+
+
+def test_modal_state_rotational_fields_do_not_shift_positional_arguments():
+    state = gl.ModalState(True, True, True, 1.0, 2.0, 3.0, 4.0, 5.0)
+    assert (state.e, state.f) == (4.0, 5.0)
+    assert (state.a, state.b, state.c) == (0.0, 0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# advance_state — G92 position reset
+# ---------------------------------------------------------------------------
+
 def test_advance_state_g92_e_reset():
     st = _state_after("M82\nG1 E5.0\nG92 E0")
     assert st.e == pytest.approx(0.0)

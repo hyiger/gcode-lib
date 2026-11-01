@@ -27,6 +27,9 @@ from gcode_lib._state import (
 # Transforms
 # ---------------------------------------------------------------------------
 
+_ROTARY_AXES = ("A", "B", "C")
+
+
 def _relative_step(target: float, emitted: float, decimals: int) -> Tuple[float, float]:
     """Return the rounded step from *emitted* to *target* and the new emitted position."""
     step = round(target - emitted, decimals)
@@ -74,6 +77,10 @@ def linearize_arcs(
         has_z  = "Z" in words
         z_word = words.get("Z")
 
+        rotary_words = {axis: words[axis] for axis in _ROTARY_AXES if axis in words}
+        rotary_start = {"A": state.a, "B": state.b, "C": state.c}
+        emitted_rotary = dict(rotary_start)
+
         e_accum = 0.0
         per_e   = round(dE / n, other_decimals) if (has_e and not state.abs_e and n > 0) else 0.0
 
@@ -109,6 +116,19 @@ def linearize_arcs(
             if has_f and f_word is not None and i == 1:
                 parts.append(f"F{fmt_axis('F', f_word, xy_decimals, other_decimals)}")
 
+            rotary_values: Dict[str, float] = {}
+            for axis, word in rotary_words.items():
+                start = rotary_start[axis]
+                if state.abs_xy:
+                    rotary_values[axis] = word if i == n else start + (word - start) * i / n
+                else:
+                    rotary_values[axis], emitted_rotary[axis] = _relative_step(
+                        start + word * i / n, emitted_rotary[axis], other_decimals
+                    )
+                parts.append(
+                    f"{axis}{fmt_axis(axis, rotary_values[axis], xy_decimals, other_decimals)}"
+                )
+
             raw = " ".join(parts)
             seg_comment = (line.comment if i == 1 else "")
             if seg_comment:
@@ -121,6 +141,7 @@ def linearize_arcs(
                 new_words["Z"] = z_word
             if has_f and f_word is not None and i == 1:
                 new_words["F"] = f_word
+            new_words.update(rotary_values)
 
             result.append(GCodeLine(
                 raw=raw,
@@ -142,6 +163,12 @@ def linearize_arcs(
             state.e = e_end
         if has_f and f_word is not None:
             state.f = f_word
+        if "A" in words:
+            state.a = words["A"] if state.abs_xy else state.a + words["A"]
+        if "B" in words:
+            state.b = words["B"] if state.abs_xy else state.b + words["B"]
+        if "C" in words:
+            state.c = words["C"] if state.abs_xy else state.c + words["C"]
 
     return result
 
@@ -200,6 +227,12 @@ def apply_xy_transform(
             state.y = y_t
             if "Z" in line.words:
                 state.z = line.words["Z"]
+            if "A" in line.words:
+                state.a = line.words["A"]
+            if "B" in line.words:
+                state.b = line.words["B"]
+            if "C" in line.words:
+                state.c = line.words["C"]
             if "E" in line.words:
                 state.e = (line.words["E"] if state.abs_e
                            else state.e + line.words["E"])
@@ -625,6 +658,9 @@ def to_absolute_xy(
             x_abs = state.x + words.get("X", 0.0)
             y_abs = state.y + words.get("Y", 0.0)
             z_abs = state.z + words.get("Z", 0.0)
+            a_abs = state.a + words.get("A", 0.0)
+            b_abs = state.b + words.get("B", 0.0)
+            c_abs = state.c + words.get("C", 0.0)
 
             code, comment = split_comment(line.raw)
             new_code = code
@@ -634,18 +670,30 @@ def to_absolute_xy(
                 new_code = replace_or_append(new_code, "Y", y_abs, xy_decimals, other_decimals)
             if "Z" in words:
                 new_code = replace_or_append(new_code, "Z", z_abs, xy_decimals, other_decimals)
+            if "A" in words:
+                new_code = replace_or_append(new_code, "A", a_abs, xy_decimals, other_decimals)
+            if "B" in words:
+                new_code = replace_or_append(new_code, "B", b_abs, xy_decimals, other_decimals)
+            if "C" in words:
+                new_code = replace_or_append(new_code, "C", c_abs, xy_decimals, other_decimals)
 
             new_raw = new_code.rstrip() + ("" if not comment else " " + comment.lstrip())
             new_words = dict(words)
             if "X" in words: new_words["X"] = x_abs
             if "Y" in words: new_words["Y"] = y_abs
             if "Z" in words: new_words["Z"] = z_abs
+            if "A" in words: new_words["A"] = a_abs
+            if "B" in words: new_words["B"] = b_abs
+            if "C" in words: new_words["C"] = c_abs
 
             result.append(GCodeLine(raw=new_raw, command=cmd, words=new_words, comment=comment))
 
             state.x = x_abs
             state.y = y_abs
             state.z = z_abs
+            state.a = a_abs
+            state.b = b_abs
+            state.c = c_abs
             if "E" in words:
                 state.e = words["E"] if state.abs_e else state.e + words["E"]
             if "F" in words:
@@ -1189,6 +1237,12 @@ def apply_xy_transform_by_layer(
             state.y = y_orig
             if "Z" in line.words:
                 state.z = line.words["Z"]
+            if "A" in line.words:
+                state.a = line.words["A"]
+            if "B" in line.words:
+                state.b = line.words["B"]
+            if "C" in line.words:
+                state.c = line.words["C"]
             if "E" in line.words:
                 state.e = line.words["E"] if state.abs_e else state.e + line.words["E"]
             if "F" in line.words:

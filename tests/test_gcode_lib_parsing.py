@@ -81,6 +81,20 @@ def test_parse_words_scientific_notation():
     assert d["E"] == pytest.approx(1.5e-3)
 
 
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        pytest.param("G1 X10E1", {"X": 10.0, "E": 1.0}, id="uppercase-e-is-a-word"),
+        pytest.param("G1 X10E1.5", {"X": 10.0, "E": 1.5}, id="uppercase-e-decimal"),
+        pytest.param("G1 X10e1.5", {"X": 10.0, "E": 1.5}, id="lowercase-e-decimal"),
+        pytest.param("G1 X1e2", {"X": 100.0}, id="lowercase-exponent"),
+        pytest.param("G1 X1e+2 Y2e-1", {"X": 100.0, "Y": 0.2}, id="signed-exponents"),
+    ],
+)
+def test_parse_words_separates_e_word_from_exponent(code, expected):
+    assert gl.parse_words(code) == pytest.approx(expected)
+
+
 def test_parse_words_with_ij():
     d = gl.parse_words("G2 X10 Y0 I5 J0")
     assert d["I"] == pytest.approx(5.0)
@@ -105,6 +119,25 @@ def test_parse_words_all_axes():
     d = gl.parse_words("G2 X1 Y2 Z3 E4 F5 I6 J7 K8 R9")
     for axis in ("X", "Y", "Z", "E", "F", "I", "J", "K", "R"):
         assert axis in d
+
+
+def test_parse_words_rotational_axes():
+    d = gl.parse_words("G1 X10 Y20 A30 B45 C60")
+    assert d["A"] == pytest.approx(30.0)
+    assert d["B"] == pytest.approx(45.0)
+    assert d["C"] == pytest.approx(60.0)
+
+
+def test_parse_words_rotational_words_outside_moves_do_not_break_commands():
+    assert gl.parse_line("M862.1 P0.4 A0 F1").command == "M862.1"
+
+
+def test_parse_words_mixed_with_rotational():
+    d = gl.parse_words("G1 X10 Y20 Z0.3 A90 B180 C270 E0.1 F3000")
+    assert d["A"] == pytest.approx(90.0)
+    assert d["B"] == pytest.approx(180.0)
+    assert d["C"] == pytest.approx(270.0)
+    assert d["E"] == pytest.approx(0.1)
 
 
 # ---------------------------------------------------------------------------

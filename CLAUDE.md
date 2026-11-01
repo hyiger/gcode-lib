@@ -44,7 +44,7 @@ tests/
 | Class | Purpose |
 |---|---|
 | `GCodeLine` | Single parsed line: `.command`, `.words`, `.comment`, `.raw`; properties `.is_move`, `.is_arc`, `.is_blank` |
-| `ModalState` | Printer modal state: `abs_xy`, `abs_e`, `ij_relative`, `x/y/z/e/f`; `.copy()` |
+| `ModalState` | Printer modal state: `abs_xy`, `abs_e`, `ij_relative`, `x/y/z/e/f/a/b/c`; `.copy()` |
 | `GCodeFile` | Top-level container: `.lines`, `.thumbnails`, `.source_format` |
 | `Bounds` | XY/Z bounding box; `.valid`, `.width`, `.height`, `.center_x`, `.center_y` |
 | `GCodeStats` | Computed stats: move/arc/travel counts, feedrates, z_heights, bounds, `.layer_count` |
@@ -70,7 +70,7 @@ tests/
 - `parse_line(raw)` → `GCodeLine`
 - `parse_lines(text)` → `List[GCodeLine]`
 - `split_comment(line)` → `(code, comment)`
-- `parse_words(code)` → `Dict[str, float]`  *(axes X/Y/Z/E/F/I/J/K/R)*
+- `parse_words(code)` → `Dict[str, float]`  *(axes X/Y/Z/A/B/C/E/F/I/J/K/R)*
 
 ### State iteration
 - `advance_state(state, line)` — mutates state in-place
