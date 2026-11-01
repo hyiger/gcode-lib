@@ -63,7 +63,6 @@ lines = gl.recenter_to_bed(
     gf.lines,
     bed_min_x=0.0, bed_max_x=p["bed_x"],
     bed_min_y=0.0, bed_max_y=p["bed_y"],
-    margin=5.0,
     mode="center",
 )
 ```
@@ -80,12 +79,13 @@ preset = gl.detect_printer_preset(gf.lines)
 print(preset)   # e.g. "COREONE", "MK4", or None
 ```
 
-`detect_print_volume` does the same lookup and returns the matching bed dimensions as a dict:
+`detect_print_volume` does the same lookup and returns a copy of the matching preset:
 
 ```python
 vol = gl.detect_print_volume(gf.lines)
 if vol:
-    print(vol)   # {"bed_x": 250.0, "bed_y": 220.0, "max_z": 250.0}
+    print(vol["bed_x"], vol["bed_y"], vol["max_z"])   # 250.0 220.0 250.0
+    # vol also holds max_nozzle_temp and max_bed_temp
 ```
 
 ## Auto-detecting filament type from G-code

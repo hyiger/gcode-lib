@@ -22,6 +22,12 @@ print(f"Z heights        : {stats.z_heights}")
 print(f"Feedrates (mm/m) : {stats.feedrates}")
 ```
 
+- Extrude, travel and retract counts include arcs, although `move_count` does not.
+- `total_extrusion` adds up every positive E delta, so unretractions count.  For net filament
+  use `estimate_print()`.
+- `z_heights` only drops consecutive repeats, so a Z-hop that returns to a height lists it again.
+  `layer_count` is the length of that list and can exceed the number of distinct heights.
+
 ## Bounding box
 
 ```python
@@ -119,7 +125,7 @@ The Z-change line (the `G1 Z…` that initiates the new layer) is included as th
 of its new layer, not the last line of the previous one.
 
 ```python
-# Count lines per layer and find the thickest
+# Count lines per layer and find the busiest
 layer_sizes = {z: len(ll) for z, ll in gl.iter_layers(gf.lines)}
 busiest_z = max(layer_sizes, key=layer_sizes.get)
 print(f"Busiest layer: Z={busiest_z:.3f}  ({layer_sizes[busiest_z]} lines)")

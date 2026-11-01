@@ -5,8 +5,14 @@
 ## Arc linearization
 
 G2/G3 arc commands can be converted to G1 segments when an XY transform cannot preserve arc
-geometry (e.g. rotation, scaling, skew).  For simple translations, prefer
-[`translate_xy_allow_arcs`](#translate-arcs-without-linearization) which avoids this step.
+geometry (e.g. scaling, skew, or any function passed to `apply_xy_transform`).  Translation and
+rotation don't need this step: use
+[`translate_xy_allow_arcs`](#translate-arcs-without-linearization) or
+[`rotate_xy`](#rotation--arc-safe-with-optional-bed-validation), which handle arcs natively.
+
+Both I/J and R-format arcs are supported, and a negative `R` selects the major arc.  Under G91,
+the segments are written as relative moves.  Rotary A/B/C words are interpolated across the
+segments, but a Z word on the arc is applied in full on the first segment.
 
 ### Basic linearization
 
@@ -48,10 +54,19 @@ print(f"Arcs before: {before}, after: {after}")   # after should be 0
 
 All transform functions return a **new list** and do not mutate their input.
 
-By default, all transform functions skip moves whose effective absolute Y position is
-negative (`skip_negative_y=True`).  This prevents PrusaSlicer purge lines and nozzle wipes
-(which dip below Y=0) from being modified.  Pass `skip_negative_y=False` to transform
-all moves regardless of Y position.
+By default, the XY transforms skip moves whose effective absolute Y position is negative
+(`skip_negative_y=True`).  This prevents PrusaSlicer purge lines and nozzle wipes (which dip
+below Y=0) from being modified.  Pass `skip_negative_y=False` to transform all moves regardless
+of Y position.  `linearize_arcs` and `to_absolute_xy` have no such option because they don't
+move the print.
+
+`translate_xy`, `apply_skew`, `apply_xy_transform` and `apply_xy_transform_by_layer` only change
+G0/G1 moves.  G2/G3 arcs pass through unchanged, with no error, so linearize first or the arcs
+will be left behind.
+
+Rotary A/B/C words pass through XY transforms exactly as written.  Parenthesised comments are
+kept, but a rewritten line carries them at the end: `G1 X10 (fast) Y20` becomes
+`G1 X11 Y21 (fast)`.
 
 ### Translate (shift) — requires linearized arcs
 
@@ -84,7 +99,8 @@ The transform applied is: `x' = x + (y - y_ref) * tan(skew_deg)`, `y' = y`.
 ### Rotation — arc-safe, with optional bed validation
 
 `rotate_xy()` rotates the entire print by a given angle.  It handles G2/G3 arcs natively
-(both endpoints and I/J offsets are rotated) so no linearization is required.
+(endpoints and I/J offsets are rotated, and R-format arcs keep their radius) so no linearization
+is required.  Rotated lines always carry both X and Y, and both I and J on arcs that use them.
 
 ```python
 gf = gl.load("print.gcode")
@@ -169,7 +185,7 @@ lines = gl.translate_xy(
     dx=5.0,
     dy=0.0,
     xy_decimals=4,      # default 3
-    other_decimals=6,   # default 5 (E, F, Z, I, J, K)
+    other_decimals=6,   # default 5 (every axis except X and Y)
 )
 ```
 
@@ -196,8 +212,9 @@ gl.save(gf, "output.gcode")
 ```
 
 `to_absolute_xy` drops all `G91` commands, rewrites the affected `G0`/`G1`/`G2`/`G3` lines with
-their accumulated absolute XY positions, and prepends a single `G90` line when any `G91` command
-was found.  Z, E, F, and comments are always preserved unchanged.
+their accumulated absolute positions, and prepends a single `G90` line when any `G91` command
+was found.  X, Y, Z and rotary A/B/C words are all converted, so `G1 Z0.2` repeated twice becomes
+`Z0.2` then `Z0.4`.  E, F, arc I/J offsets and comments are left as they were.
 
 ```python
 # Supply an explicit starting state if the file begins mid-print
@@ -215,7 +232,8 @@ lines = gl.to_absolute_xy(gf.lines, initial_state=initial)
 `translate_xy_allow_arcs()` shifts XY coordinates without first requiring arc linearization.
 It translates `G0`/`G1` endpoints **and** `G2`/`G3` arc endpoints in one pass, leaving arc
 parameters (`I`, `J`) untouched (they are always relative to the arc start point in default
-`G91.1` mode).
+`G91.1` mode).  Rewritten lines always carry both X and Y, so a move that omitted an axis still
+receives the full offset.
 
 ```python
 import gcode_lib as gl
@@ -240,7 +258,8 @@ gl.save(gf, "shifted.gcode")
 
 ### Apply a transform to selected layers only
 
-`apply_xy_transform_by_layer()` runs a transform on a subset of layers, identified by Z range:
+`apply_xy_transform_by_layer()` runs a transform on a subset of layers, identified by Z range.
+It only changes G0/G1 moves, so linearize first or any arcs in the range will be left behind:
 
 ```python
 import math
@@ -255,7 +274,7 @@ def rotate(x, y):
 
 # Only rotate layers at Z >= 2.0 mm
 lines = gl.apply_xy_transform_by_layer(
-    gf.lines,
+    gl.linearize_arcs(gf.lines),
     transform_fn=rotate,
     z_min=2.0,   # skip layers below this Z
     z_max=None,  # no upper limit
@@ -264,12 +283,13 @@ gf.lines = lines
 ```
 
 Both `z_min` and `z_max` are inclusive bounds.  Set either to `None` to leave that bound open.
-Layers outside the Z range pass through unchanged.
+Layers outside the Z range pass through unchanged.  As in `iter_layers`, a line that changes Z
+belongs to the layer it moves to.
 
 ```python
 # Apply a different shift to a specific Z band
 lines = gl.apply_xy_transform_by_layer(
-    gf.lines,
+    gl.linearize_arcs(gf.lines),
     transform_fn=lambda x, y: (x + 2.0, y),
     z_min=1.0,
     z_max=3.0,
@@ -282,7 +302,7 @@ lines = gl.apply_xy_transform_by_layer(
 
 `analyze_xy_transform()` performs a **dry run** of any transform function and returns a summary
 dict — without modifying any G-code.  Use it to validate a transform before committing the
-result to disk.
+result to disk.  It only measures G0/G1 moves, so linearize first to include arcs.
 
 ```python
 import gcode_lib as gl
@@ -292,7 +312,7 @@ gf = gl.load("print.gcode")
 def my_shift(x, y):
     return (x + 10.0, y + 5.0)
 
-info = gl.analyze_xy_transform(gf.lines, my_shift)
+info = gl.analyze_xy_transform(gl.linearize_arcs(gf.lines), my_shift)
 print(f"Max X displacement : {info['max_dx']:.3f} mm")
 print(f"Max Y displacement : {info['max_dy']:.3f} mm")
 print(f"Max total displace : {info['max_displacement']:.3f} mm")
@@ -300,19 +320,21 @@ print(f"Worst line         : {info['line_number']}")
 print(f"Total moves        : {info['move_count']}")
 ```
 
-### Validate against bed limits before transforming
+### Validate against bed limits after transforming
+
+`analyze_xy_transform` reports how far moves shift, not whether they stay on the bed, so check
+the transformed lines:
 
 ```python
 bed = [(0, 0), (250, 0), (250, 220), (0, 220)]
 
-# Check the transform stays in bounds before applying it
-info = gl.analyze_xy_transform(gf.lines, my_shift)
-worst_x = info["max_dx"]
-worst_y = info["max_dy"]
-
-# Then apply
 lines = gl.translate_xy_allow_arcs(gf.lines, dx=10.0, dy=5.0)
-hits = gl.find_oob_moves(lines, bed_polygon=bed)
+
+# Ignore PrusaSlicer's purge line, which sits below Y=0 on purpose
+hits = [hit for hit in gl.find_oob_moves(lines, bed_polygon=bed) if hit.y >= 0]
 if hits:
     raise ValueError(f"{len(hits)} moves outside bed after transform")
 ```
+
+`find_oob_moves` checks every move, including the end-of-print park position, so a shift that
+keeps the model on the bed can still be reported if it pushes the park move off the edge.
