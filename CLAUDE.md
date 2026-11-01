@@ -2,25 +2,39 @@
 
 ## Project overview
 
-Single-file, stdlib-only Python library for parsing, analysing, and transforming G-code files
-(both plain-text `.gcode` and Prusa binary `.bgcode`).  Everything lives in `gcode_lib.py`.
+Stdlib-only Python library for parsing, analysing, and transforming G-code files (both
+plain-text `.gcode` and Prusa binary `.bgcode`).  The code lives in the `gcode_lib/` package, and
+`gcode_lib/__init__.py` re-exports the public API, so use `import gcode_lib as gl`.
 
 ## Key constraints
 
 - **Python 3.10+** — uses `from __future__ import annotations`.
 - **No third-party runtime deps** — stdlib only (`re`, `math`, `struct`, `zlib`, `base64`,
   `tempfile`, `os`, `sys`, `dataclasses`, `subprocess`, `shutil`, `concurrent.futures`,
-  `pathlib`, `typing`, `json`, `uuid`, `urllib.request`, `urllib.error`, `configparser`,
-  `multiprocessing`, `platform`, `secrets`, `warnings`).  VTK is an optional dependency
-  for thumbnail rendering (`render_stl_to_png`); functions degrade gracefully if absent.
-- **G91 support**: `apply_xy_transform`, `apply_skew`, and `translate_xy` raise `ValueError`
-  for relative moves. Use `to_absolute_xy()` to normalise first.  `translate_xy_allow_arcs`
-  also requires G90.
+  `pathlib`, `typing`, `json`, `uuid`, `urllib.request`, `urllib.error`, `urllib.parse`,
+  `http.client`, `configparser`, `multiprocessing`, `queue`, `time`, `platform`, `secrets`,
+  `warnings`).  VTK is an optional dependency for thumbnail rendering (`render_stl_to_png`),
+  which raises `RuntimeError` if VTK is absent.
+- **G91 support**: `apply_xy_transform`, `apply_skew`, `translate_xy`,
+  `translate_xy_allow_arcs`, `rotate_xy`, `apply_xy_transform_by_layer` and `recenter_to_bed`
+  raise `ValueError` for relative moves.  Use `to_absolute_xy()` to normalise first.
+  `linearize_arcs` handles G91 directly.
 
 ## File layout
 
 ```
-gcode_lib.py          # entire library (one file)
+gcode_lib/
+  __init__.py         # re-exports the public API
+  _constants.py       # defaults, regexes, bgcode constants
+  _types.py           # core dataclasses
+  _parsing.py         # split_comment, parse_words, parse_line
+  _state.py           # modal state, iterators, formatting, arc geometry
+  _transforms.py      # transforms, statistics, bed checks, layers
+  _io.py              # load, save, text round-trip, template rendering
+  _bgcode.py          # .bgcode reading and writing
+  _presets.py         # presets, G-code templates, thumbnails, slicer and filename helpers
+  _prusaslicer.py     # PrusaSlicer CLI and INI helpers
+  _prusalink.py       # PrusaLink client
 tests/
   test_gcode_lib_io.py
   test_gcode_lib_parsing.py
@@ -32,10 +46,8 @@ tests/
   test_gcode_lib_extensions.py
   test_gcode_lib_prusalink.py
   test_gcode_lib_ini.py
-  test_gcode_lib_thumbnails_render.py
   test_gcode_lib_printer_gcode.py
   test_gcode_lib_slicer_helpers.py
-  test_gcode_lib_filename_utils.py
 ```
 
 ## Public API surface
@@ -83,12 +95,17 @@ tests/
 
 ### Transforms
 
-All transform functions accept `skip_negative_y=True` (default) to skip moves whose effective
+The XY transforms accept `skip_negative_y=True` (default) to skip moves whose effective
 absolute Y position is negative — this prevents PrusaSlicer purge lines and nozzle wipes from
-being modified.  Pass `skip_negative_y=False` to transform all moves.
+being modified.  Pass `skip_negative_y=False` to transform all moves.  `linearize_arcs` and
+`to_absolute_xy` have no such option.
 
-- `to_absolute_xy(lines)` — convert all G91 relative XY moves to absolute G90 (**resolves G91 pitfall**)
-- `linearize_arcs(lines, seg_mm, max_deg)` — G2/G3 → G1 segments
+`translate_xy`, `apply_skew`, `apply_xy_transform` and `apply_xy_transform_by_layer` only change
+G0/G1 moves and pass arcs through unchanged, so linearize first.
+
+- `to_absolute_xy(lines)` — convert all G91 moves (X, Y, Z, A, B, C) to absolute G90 (**resolves G91 pitfall**)
+- `linearize_arcs(lines, seg_mm, max_deg)` — G2/G3 → G1 segments; supports I/J and R arcs and G91; A/B/C are interpolated, Z lands on the first segment
+- `linearize_arc_points(state, words, cw, seg_mm, max_deg)` → `List[Tuple[float, float]]` — one arc as XY points
 - `translate_xy_allow_arcs(lines, dx, dy, skip_negative_y=True)` — shift XY including arcs (no prior linearization needed)
 - `apply_xy_transform(lines, fn, skip_negative_y=True)` — arbitrary `fn(x, y) -> (x', y')`
 - `apply_xy_transform_by_layer(lines, fn, z_min, z_max, skip_negative_y=True)` — transform only layers within Z range
@@ -97,15 +114,15 @@ being modified.  Pass `skip_negative_y=False` to transform all moves.
 - `translate_xy(lines, dx, dy, skip_negative_y=True)` — shift XY coordinates (G1 only; use `translate_xy_allow_arcs` for arcs)
 
 ### Statistics
-- `compute_bounds(lines, extruding_only, include_arcs, skip_negative_y=False)` → `Bounds`
+- `compute_bounds(lines, *, extruding_only, include_arcs, skip_negative_y=False)` → `Bounds`
 - `compute_stats(lines)` → `GCodeStats`
 - `estimate_print(lines, filament_type, filament_diameter, filament_density)` → `PrintEstimate` — estimated print time, filament length (m), and weight (g); auto-detects filament type from `; filament_type` comments
 - `analyze_xy_transform(lines, fn)` → `dict` — dry-run: max_dx, max_dy, max_displacement, line_number, move_count
 
 ### Bed / placement helpers
-- `find_oob_moves(lines, bed_polygon)` → `List[OOBHit]`
+- `find_oob_moves(lines, bed_polygon)` → `List[OOBHit]` — G0/G1 only; reports purge lines below Y=0
 - `max_oob_distance(lines, bed_polygon)` → `float`
-- `recenter_to_bed(lines, bed_min_x, bed_max_x, bed_min_y, bed_max_y, margin, mode)` — `"center"` or `"fit"`
+- `recenter_to_bed(lines, bed_min_x, bed_max_x, bed_min_y, bed_max_y, margin, mode)` — `"center"` (ignores `margin`, no fit check) or `"fit"` (linearizes arcs itself)
 
 ### Formatting helpers
 - `fmt_float(v, places)` — trims trailing zeros
@@ -160,7 +177,7 @@ being modified.  Pass `skip_negative_y=False` to transform all moves.
 - `FILAMENT_PRESETS` — dict of `{name: {hotend, bed, fan, retract, temp_min, temp_max, speed, enclosure, density}}` (PLA, PETG, ASA, TPU, ABS, PA, PC, PCTG, PP, PPA, HIPS, PLA-CF, PETG-CF, PA-CF)
 - `detect_printer_preset(lines)` → `Optional[str]` — detect preset name from `M862.3 P` command in G-code
 - `detect_filament_type(lines)` → `Optional[str]` — detect filament type from `; filament_type` comment in G-code
-- `detect_print_volume(lines)` → `Optional[Dict[str, float]]` — detect print volume (`bed_x`, `bed_y`, `max_z`) from G-code
+- `detect_print_volume(lines)` → `Optional[Dict[str, float]]` — copy of the matching `PRINTER_PRESETS` entry, detected from G-code
 
 ### PrusaSlicer CLI helpers
 - `find_prusaslicer_executable(prefer_console, explicit_path)` → `str`
@@ -180,7 +197,7 @@ being modified.  Pass `skip_negative_y=False` to transform all moves.
 DEFAULT_ARC_SEG_MM   = 0.20   # max chord length per arc segment (mm)
 DEFAULT_ARC_MAX_DEG  = 5.0    # max sweep per arc segment (degrees)
 DEFAULT_XY_DECIMALS  = 3      # decimal places for X/Y output
-DEFAULT_OTHER_DECIMALS = 5    # decimal places for E/F/Z/I/J/K output
+DEFAULT_OTHER_DECIMALS = 5    # decimal places for every axis except X and Y
 EPS                  = 1e-9   # float comparison tolerance
 ```
 
@@ -192,7 +209,8 @@ EPS                  = 1e-9   # float comparison tolerance
 - **Atomic saves** — `save()` writes to a temp file then `os.replace()`; never leaves a corrupt file.
 - **`GCodeLine.raw` is the source of truth** for non-transformed lines — it is never reparsed.
 - Internal helpers are prefixed `_` and not part of the public API.
-- Z and E are **never** modified by XY transform functions.
+- Z, E and A/B/C are **never** modified by XY transform functions.  `to_absolute_xy` does rewrite
+  Z and A/B/C, and `linearize_arcs` splits E and A/B/C across segments.
 
 ## Testing
 
@@ -200,9 +218,9 @@ EPS                  = 1e-9   # float comparison tolerance
 python -m pytest tests/
 ```
 
-Tests use only pytest and stdlib fixtures (`tmp_path`). No external test data files are required;
-test cases build G-code strings inline.  Integration tests skip gracefully if real printer files
-are absent.
+Tests use only pytest and stdlib fixtures (`tmp_path`), and most build G-code strings inline.
+Integration tests use the Benchy files in `tests/` and skip gracefully if real printer files are
+absent.  Real VTK render tests run only on macOS with VTK installed.
 
 ## Typical transform workflow
 
@@ -210,7 +228,7 @@ are absent.
 import gcode_lib as gl
 
 gf = gl.load("print.gcode")
-lines = gl.linearize_arcs(gf.lines)          # must come before XY transform
+lines = gl.linearize_arcs(gf.lines)          # must come before translate_xy
 lines = gl.translate_xy(lines, dx=10, dy=5)
 gf.lines = lines
 gl.save(gf, "print_shifted.gcode")
@@ -229,9 +247,8 @@ lines = gl.translate_xy(lines, dx=10, dy=5)
 
 ### Fit print to bed
 ```python
-lines = gl.linearize_arcs(gf.lines)   # required for fit mode (scale needs G1 segments)
-lines = gl.recenter_to_bed(
-    lines,
+lines = gl.recenter_to_bed(           # fit mode linearizes arcs itself
+    gf.lines,
     bed_min_x=0, bed_max_x=250,
     bed_min_y=0, bed_max_y=220,
     margin=5.0, mode="fit",
@@ -251,6 +268,6 @@ print(result.ok, result.returncode)
 
 ## G91 / relative-mode pitfall
 
-`apply_xy_transform`, `apply_skew`, and `translate_xy` all raise `ValueError` if they encounter
-a G0/G1 move containing X or Y words while `abs_xy` is `False`.  Use `to_absolute_xy()` to
+The transforms listed under Key constraints raise `ValueError` if they encounter a move with X
+or Y words while `abs_xy` is `False` (arcs too, for the ones that rewrite arcs).  Use `to_absolute_xy()` to
 pre-process the file, or ensure the source uses G90 throughout (most sliced files do).

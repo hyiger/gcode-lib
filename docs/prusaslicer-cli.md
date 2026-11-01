@@ -14,7 +14,8 @@ print(exe)
 # e.g. /Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer-console
 ```
 
-`find_prusaslicer_executable` searches `PATH` and a list of well-known install locations.
+`find_prusaslicer_executable` checks well-known macOS and Windows install locations first, then
+searches `PATH`.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -27,7 +28,7 @@ Raises `FileNotFoundError` if no binary can be found.
 
 ```python
 caps = gl.probe_prusaslicer_capabilities(exe)
-print(caps.version_text)           # "PrusaSlicer-2.8.0+win64 ..."
+print(caps.version_text)           # "PrusaSlicer-2.8.0+win64"
 print(caps.has_export_gcode)       # True
 print(caps.has_load_config)        # True
 print(caps.supports_binary_gcode)  # True / False
@@ -78,7 +79,8 @@ result = gl.slice_model(exe, req)
 
 ## Batch slicing
 
-`slice_batch` slices multiple STL files in parallel using a thread pool:
+`slice_batch` slices multiple models.  It runs one at a time by default, and uses a thread pool
+when `parallelism` is above 1:
 
 ```python
 import os
@@ -153,4 +155,5 @@ All BGCode compression types are fully supported:
 - **Heatshrink** (types 2 and 3) — pure-Python LZSS decompression, no third-party deps
 - **MeatPack** encoding (types 1 and 2) — nibble-based G-code encoding used by PrusaSlicer
 
-Thumbnail and metadata blocks are always read correctly regardless of compression type.
+Thumbnail blocks are decoded for every compression type above.  Metadata blocks are not decoded
+when loading; they are kept as raw bytes and written back unchanged.

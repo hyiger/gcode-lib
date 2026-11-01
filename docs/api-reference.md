@@ -10,7 +10,7 @@
 | `DEFAULT_ARC_SEG_MM` | `0.20` | Max chord length (mm) per arc segment |
 | `DEFAULT_ARC_MAX_DEG` | `5.0` | Max sweep angle (°) per arc segment |
 | `DEFAULT_XY_DECIMALS` | `3` | Output decimal places for X/Y |
-| `DEFAULT_OTHER_DECIMALS` | `5` | Output decimal places for E/F/Z/I/J/K |
+| `DEFAULT_OTHER_DECIMALS` | `5` | Output decimal places for every axis except X and Y |
 
 ## Presets
 
@@ -28,7 +28,7 @@
 | `raw` | `str` | Original line text (trailing newline stripped) |
 | `command` | `str` | Uppercased command token (e.g. `"G1"`) or `""` |
 | `words` | `Dict[str, float]` | Parsed axis words |
-| `comment` | `str` | Comment portion including leading `;`, or `""` |
+| `comment` | `str` | Comment portion including its `;` or `(...)` delimiters, or `""` |
 | `is_move` | `bool` | `True` if G0 or G1 |
 | `is_arc` | `bool` | `True` if G2 or G3 |
 | `is_blank` | `bool` | `True` if no command and no meaningful content |
@@ -78,14 +78,14 @@
 | `comment_only_lines` | Lines with comment but no command |
 | `move_count` | G0 + G1 total |
 | `arc_count` | G2 + G3 total |
-| `travel_count` | Moves without positive extrusion |
-| `extrude_count` | Moves with positive E delta |
-| `retract_count` | Moves with negative E delta |
-| `total_extrusion` | Total E deposited (mm) |
+| `travel_count` | Moves and arcs without positive extrusion |
+| `extrude_count` | Moves and arcs with positive E delta |
+| `retract_count` | Moves and arcs with negative E delta |
+| `total_extrusion` | Sum of positive E deltas (mm). Unretractions count, so this exceeds net filament when a file retracts; `estimate_print` reports net filament |
 | `bounds` | `Bounds` object |
-| `z_heights` | Unique Z values in order seen |
+| `z_heights` | Z values in order seen, with consecutive repeats removed. A height can reappear after a Z-hop |
 | `feedrates` | Unique F values in order seen |
-| `layer_count` | `len(z_heights)` |
+| `layer_count` | `len(z_heights)`, so Z-hops can make it higher than the number of distinct heights |
 
 ### `PrintEstimate`
 
@@ -100,6 +100,7 @@
 
 | Attribute | Description |
 |---|---|
+| `params` | 6-byte block parameters: format code, width, height |
 | `data` | Decompressed image bytes |
 | `width` | Image width in pixels |
 | `height` | Image height in pixels |
@@ -196,6 +197,11 @@ split_comment(line: str) -> Tuple[str, str]
 parse_words(code: str) -> Dict[str, float]
 ```
 
+`split_comment` moves `;` and `(...)` comments out of the code.  Paren comments may nest, and an
+unclosed one runs to the end of the line.  `parse_words` recognises X, Y, Z, A, B, C, E, F, I, J,
+K and R, ignores comments, and accepts words with no space between them.  An uppercase `E` after
+a number is always an E word, so `X10E1` is X=10, E=1; exponents must be lowercase, as in `1e-3`.
+
 ### State
 
 ```
@@ -204,7 +210,13 @@ iter_with_state(lines, initial_state=None) -> Iterator[Tuple[GCodeLine, ModalSta
 iter_moves(lines, initial_state=None) -> Iterator[Tuple[GCodeLine, ModalState]]
 iter_arcs(lines, initial_state=None) -> Iterator[Tuple[GCodeLine, ModalState]]
 iter_extruding(lines, initial_state=None) -> Iterator[Tuple[GCodeLine, ModalState]]
+is_extrusion_move(line: GCodeLine) -> bool
+linearize_arc_points(state: ModalState, words: Dict[str, float], cw: bool,
+                     seg_mm=0.20, max_deg=5.0) -> List[Tuple[float, float]]
 ```
+
+`linearize_arc_points` converts one arc to XY points without changing `state`.  `cw` is `True`
+for G2.  The last point is exactly the arc endpoint.
 
 ### Transforms
 
@@ -257,7 +269,7 @@ recenter_to_bed(lines, bed_min_x, bed_max_x, bed_min_y, bed_max_y,
 ### Statistics
 
 ```
-compute_bounds(lines, extruding_only=False, include_arcs=True,
+compute_bounds(lines, *, extruding_only=False, include_arcs=True,
                skip_negative_y=False,
                arc_seg_mm=0.20, arc_max_deg=5.0,
                initial_state=None) -> Bounds
@@ -303,7 +315,7 @@ detect_filament_type(lines: List[GCodeLine]) -> Optional[str]
 ```
 
 `detect_printer_preset` scans for `M862.3 P "..."` and returns the matching `PRINTER_PRESETS` key (e.g. `"COREONE"`) or `None`.
-`detect_print_volume` returns the matching preset's bed dimensions (`bed_x`, `bed_y`, `max_z`) as a dict, or `None`.
+`detect_print_volume` returns a copy of the matching preset (`bed_x`, `bed_y`, `max_z`, `max_nozzle_temp`, `max_bed_temp`), or `None`.
 `detect_filament_type` scans for `; filament_type = ...` comments and returns the filament type string (e.g. `"PETG"`) or `None`.
 
 ### Template and thumbnail
@@ -368,7 +380,8 @@ parse_prusaslicer_ini(path: str) -> Dict[str, Any]
 
 Parse a PrusaSlicer `.ini` and return extracted/normalized keys (for example
 `nozzle_diameter`, `nozzle_temp`, `bed_temp`, `fan_speed`, `layer_height`,
-`extrusion_width`, `bed_center`, `printer_model`, `filament_type`) when present.
+`extrusion_width`, `bed_center`, `printer_model`, `filament_type`, `nozzle_high_flow`,
+`nozzle_hardened`) when present.
 
 ### §12 INI Editing
 
@@ -380,17 +393,17 @@ replace_ini_value(lines: List[str], key: str,
 Replace the value of `key` in INI `lines` using regex matching.  Returns the updated lines and a `bool` indicating whether the key was found.
 
 ```
-pa_command(pa_value: float, printer: str) -> str
+pa_command(pa_value: float, printer: str = "COREONE") -> str
 ```
 
 Return the appropriate pressure advance G-code command: `M572 S<val>` (default) or `M900 K<val>` (MINI).
 
 ```
 inject_pa_into_start_gcode(lines: List[str], pa_value: float,
-                           printer: str) -> List[str]
+                           printer: str = "COREONE") -> List[str]
 ```
 
-Inject a pressure advance command into the start G-code lines of an INI value.
+Set the pressure advance command in the `start_filament_gcode` value of INI `lines`.  An existing `M572 S` or `M900 K` command is replaced, otherwise the command is put first.  If the key is missing, a new `start_filament_gcode` line is appended.
 
 ### §13 Thumbnail Rendering
 
@@ -420,17 +433,17 @@ Build a bgcode-format thumbnail block from raw PNG data.
 
 ```
 inject_thumbnails(gf: GCodeFile, stl_path: str,
-                  spec_string: str) -> None
+                  spec_string: str, *, verbose: bool = False) -> None
 ```
 
-Render thumbnails from an STL and inject them into a `GCodeFile`.
+Render thumbnails from an STL and inject them into a `.bgcode` `GCodeFile`.  Does nothing for text files or files that already have thumbnails, and warns rather than raises if rendering fails.
 
 ```
 patch_slicer_metadata(gf: GCodeFile, printer_model: str,
-                      nozzle_diameter: float) -> None
+                      nozzle_diameter: float, *, verbose: bool = False) -> None
 ```
 
-Patch the `printer_settings_id` metadata in a `GCodeFile` to match the given printer model and nozzle diameter.
+Patch the `printer_settings_id` and `printer_model` metadata in a `.bgcode` `GCodeFile` to match the given printer model and nozzle diameter.  Does nothing for text files or unknown printer and nozzle combinations.
 
 ### §14 Printer G-code Templates
 
@@ -468,11 +481,13 @@ compute_m555(bed_center: str, model_width: float,
              model_depth: float) -> Dict[str, int]
 ```
 
-Compute M555 positioning parameters from bed centre and model dimensions.
+Compute M555 positioning parameters from bed centre and model dimensions.  Returns `m555_x`, `m555_y`, `m555_w` and `m555_h`.
 
 ```
-render_start_gcode(printer: str, ...) -> str
-render_end_gcode(printer: str, ...) -> str
+render_start_gcode(printer: str, *, nozzle_dia: float, bed_temp: int,
+                   hotend_temp: int, bed_center: str, model_width: float,
+                   model_depth: float, cool_fan: bool = True) -> str
+render_end_gcode(printer: str, *, max_layer_z: float) -> str
 ```
 
 Render start/end G-code from the printer's template with provided variables.

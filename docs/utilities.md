@@ -31,11 +31,11 @@ variables = {
 rendered = gl.render_template(template, variables)
 print(rendered)
 # M104 S215   ; set hotend
-# M140 S60    ; set bed
-# G28         ; home
-# {if is_first_layer}   ← preserved (not a simple lowercase identifier)
+# M140 S60      ; set bed
+# G28                   ; home
+# {if is_first_layer}          ← preserved (not a simple lowercase identifier)
 # M106 S0               ; fan off first layer
-# {endif}               ← preserved
+# {endif}                      ← preserved
 ```
 
 ### Combine with filament presets
@@ -118,13 +118,17 @@ gl.pa_command(0.04, "MINI")  # "M900 K0.0400"
 
 ### inject_pa_into_start_gcode
 
-Inject a pressure advance command into start G-code lines (as stored in an INI value).
+Set the pressure advance command in the `start_filament_gcode` value of a list of INI lines.  An
+existing `M572 S` or `M900 K` command is replaced, otherwise the new command is put first.
 
 ```python
-start_lines = ["G28\n", "G1 Z5\n"]
-updated = gl.inject_pa_into_start_gcode(start_lines, 0.04, "MK4")
-# Appends "M572 S0.0400" to the start G-code
+ini_lines = ['start_filament_gcode = "G92 E0"']
+updated = gl.inject_pa_into_start_gcode(ini_lines, 0.04, "MK4")
+# ['start_filament_gcode = "M572 S0.0400\\nG92 E0"']
 ```
+
+If the key is missing, a new `start_filament_gcode` line is appended.  The other lines are left
+as they were.
 
 ---
 

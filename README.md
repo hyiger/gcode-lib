@@ -73,6 +73,7 @@ gl.save(gf, "benchy_shifted.gcode")
 - **[Utilities](docs/utilities.md)** — template rendering, thumbnail encoding
 - **[Binary .bgcode](docs/binary-bgcode.md)** — full BGCode read support (None/DEFLATE/Heatshrink + MeatPack) and BGCode v2 writing
 - **[PrusaSlicer CLI](docs/prusaslicer-cli.md)** — executable discovery, capability probing, single and batch slicing, slicer compatibility notes
+- **[PrusaLink API](docs/api-reference.md#prusalink-api)** — printer version, status, job, and G-code upload calls
 - **[API reference](docs/api-reference.md)** — complete function signatures, data classes, and constants
 
 ---
@@ -93,6 +94,9 @@ print(line.is_move)          # True  (G0 or G1)
 print(line.is_arc)           # False
 print(line.is_blank)         # False
 ```
+
+`words` holds X, Y, Z, rotary A, B, C, E, F, I, J, K and R.  Comments can be `;` or `(...)`, and
+text inside either is never read as a word.
 
 ### ModalState
 
@@ -121,15 +125,17 @@ print(len(gf.thumbnails))       # populated for .bgcode and plain-text files wit
 ## Limitations
 
 - **G91 relative XY in transforms:** `apply_xy_transform`, `apply_skew`, `translate_xy`,
-  `translate_xy_allow_arcs`, `rotate_xy`, and `apply_xy_transform_by_layer` raise `ValueError`
-  if a move/arc with X/Y words is encountered while the modal state is in G91 mode.  Use
+  `translate_xy_allow_arcs`, `rotate_xy`, `apply_xy_transform_by_layer`, and `recenter_to_bed`
+  raise `ValueError` if a move/arc with X/Y words is encountered while the modal state is in
+  G91 mode.  `linearize_arcs` handles G91 directly.  Use
   `to_absolute_xy()` to convert relative segments to absolute before transforming — see
   [G91 and relative-mode handling](docs/transforms.md#g91-and-relative-mode-handling).
 - **Arc endpoint tracking only.**  `advance_state` updates position to the G2/G3 endpoint but
   does not interpolate intermediate arc positions.  Use `linearize_arcs` if you need full path
   coverage.
-- **No helical arc support.**  G2/G3 with a simultaneous Z move (helical arcs) are not supported.
-  All arcs are treated as planar (XY only).
+- **Helical arcs are not interpolated in Z.**  Arc geometry is planar.  A G2/G3 with a Z word
+  reaches its final Z at the end of the move, and `estimate_print` includes the Z travel, but
+  `linearize_arcs` applies the whole Z change on the first segment.
 - **No G-code validation.**  The library parses and transforms; it does not validate that the
   resulting G-code is printable or within machine limits.  Use `find_oob_moves` for basic bed
   boundary checking.
@@ -144,5 +150,6 @@ python -m pytest tests/ -v
 
 Tests cover I/O, parsing, state tracking, statistics, all transform functions, bed placement,
 layer iteration, presets, preset detection, template rendering, thumbnail encoding, BGCode
-round-trips (including Heatshrink decompression and MeatPack decoding), and PrusaSlicer CLI
-helpers — using only stdlib and pytest.
+round-trips (including Heatshrink decompression and MeatPack decoding), PrusaSlicer CLI and INI
+helpers, and the PrusaLink client — using only stdlib and pytest.  Real VTK thumbnail rendering
+is also tested on macOS when VTK is installed.
