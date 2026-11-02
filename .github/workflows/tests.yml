@@ -21,7 +21,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install pytest
-        run: pip install pytest
+        run: pip install pytest heatshrink2
 
       - name: Run tests
         run: python -m pytest tests/ -v

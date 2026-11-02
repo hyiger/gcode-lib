@@ -4,7 +4,7 @@ import re
 import struct
 from typing import Dict, List, Tuple
 
-__version__ = "1.2.2"
+__version__ = "1.8.0"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -78,6 +78,7 @@ _THUMB_END_RE = re.compile(r"^;\s*thumbnail(?:_\w+)?\s+end\b", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 
 # Minimal valid .bgcode v2 file header: magic + version(uint32) + checksum_type(uint16)
+_BGCODE_GCODE_BLOCK_SIZE = 65536  # libbgcode's limit on the text in one G-code block
 _BGCODE_VERSION = 2
 _BGCODE_CHECKSUM_CRC32 = 1
 _BGCODE_FILE_HDR_V2: bytes = (

@@ -14,7 +14,8 @@ plain-text `.gcode` and Prusa binary `.bgcode`).  The code lives in the `gcode_l
   `pathlib`, `typing`, `json`, `uuid`, `urllib.request`, `urllib.error`, `urllib.parse`,
   `http.client`, `configparser`, `multiprocessing`, `queue`, `time`, `platform`, `secrets`,
   `warnings`).  VTK is an optional dependency for thumbnail rendering (`render_stl_to_png`),
-  which raises `RuntimeError` if VTK is absent.
+  which raises `RuntimeError` if VTK is absent.  `heatshrink2` is an optional dependency that
+  speeds up `write_bgcode(compress=True)`, which falls back to a pure-Python encoder without it.
 - **G91 support**: `apply_xy_transform`, `apply_skew`, `translate_xy`,
   `translate_xy_allow_arcs`, `rotate_xy`, `apply_xy_transform_by_layer` and `recenter_to_bed`
   raise `ValueError` for relative moves.  Use `to_absolute_xy()` to normalise first.
@@ -76,7 +77,8 @@ tests/
 - `save(gf, path)` — atomic write, preserves format
 - `from_text(text)` / `to_text(gf)` — string round-trip
 - `read_bgcode(data)` — load `GCodeFile` from raw `.bgcode` bytes (supports DEFLATE, Heatshrink, and MeatPack)
-- `write_bgcode(ascii_gcode, thumbnails)` → `bytes` — serialise to `.bgcode`
+- `write_bgcode(ascii_gcode, thumbnails, compress=False)` → `bytes` — serialise to `.bgcode`;
+  `compress=True` writes MeatPack and Heatshrink blocks, as PrusaSlicer does
 
 ### Parsing utilities
 - `parse_line(raw)` → `GCodeLine`

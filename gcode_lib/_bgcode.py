@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 import struct
+import sys
 import zlib
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from gcode_lib._constants import (
+    _BGCODE_GCODE_BLOCK_SIZE,
     _BGCODE_MAGIC, _BLK_FILE_METADATA, _BLK_GCODE,
     _BLK_SLICER_METADATA, _BLK_PRINTER_METADATA,
     _BLK_PRINT_METADATA, _BLK_THUMBNAIL,
@@ -17,6 +19,11 @@ from gcode_lib._constants import (
 )
 from gcode_lib._types import GCodeFile, Thumbnail
 from gcode_lib._parsing import parse_lines
+
+try:
+    import heatshrink2  # optional: compresses about 25 times faster than the code below
+except Exception:  # a broken install must not stop text-only use
+    heatshrink2 = None
 
 
 # Hard cap for any single uncompressed block to avoid memory exhaustion on
@@ -121,6 +128,71 @@ def _heatshrink_decompress(
     return bytes(output)
 
 
+def _heatshrink_compress(data: bytes, window_sz2: int, lookahead_sz2: int) -> bytes:
+    """Compress *data* with Heatshrink LZSS, the inverse of :func:`_heatshrink_decompress`."""
+    if heatshrink2 is not None:
+        return heatshrink2.compress(data, window_sz2=window_sz2, lookahead_sz2=lookahead_sz2)
+    return _heatshrink_compress_python(data, window_sz2, lookahead_sz2)
+
+
+def _heatshrink_compress_python(data: bytes, window_sz2: int, lookahead_sz2: int) -> bytes:
+    """Pure-Python Heatshrink encoder, used when the optional ``heatshrink2`` is absent.
+
+    Each step takes the longest match within the window, because a back-reference
+    of even two bytes costs less than two literals.  Matches are found with
+    ``bytes.rfind``, which keeps the search in C.
+    """
+    size = len(data)
+    window = (1 << window_sz2) - 1
+    max_match = 1 << lookahead_sz2
+    reference_bits = 1 + window_sz2 + lookahead_sz2
+    rfind = data.rfind
+
+    output = bytearray()
+    pending = 0       # bits not yet written, most significant first
+    pending_bits = 0
+    pos = 0
+
+    while pos < size:
+        limit = min(max_match, size - pos)
+        start = pos - window if pos > window else 0
+        best = 0
+        best_at = 0
+        length = 2
+
+        while length <= limit:
+            # A match may overlap the bytes being written, as in the decoder.
+            found = rfind(data[pos:pos + length], start, pos + length - 1)
+            if found < 0:
+                break
+            matched = length
+            while matched < limit and data[found + matched] == data[pos + matched]:
+                matched += 1
+            best = matched
+            best_at = found
+            length = matched + 1
+
+        if best:
+            pending = (pending << reference_bits) | ((pos - best_at - 1) << lookahead_sz2) | (best - 1)
+            pending_bits += reference_bits
+            pos += best
+        else:
+            pending = (pending << 9) | 0x100 | data[pos]
+            pending_bits += 9
+            pos += 1
+
+        if pending_bits >= 64:
+            remainder = pending_bits % 8
+            output += (pending >> remainder).to_bytes((pending_bits - remainder) // 8, "big")
+            pending &= (1 << remainder) - 1
+            pending_bits = remainder
+
+    if pending_bits:
+        padding = -pending_bits % 8
+        output += (pending << padding).to_bytes((pending_bits + padding) // 8, "big")
+    return bytes(output)
+
+
 # ---------------------------------------------------------------------------
 # Compression helpers
 # ---------------------------------------------------------------------------
@@ -172,10 +244,107 @@ _MP_CMD_RESET_ALL           = 249
 _MP_CMD_ENABLE_NO_SPACES    = 247
 _MP_CMD_DISABLE_NO_SPACES   = 246
 
-_MP_SPACE_RE = re.compile(r"(?<=[0-9.])(?=[A-Z])")
+_MP_SPACE_RE = re.compile(r"(?<=[0-9.A-Z])(?=[A-Z])")
 """Insert whitespace before an uppercase axis/command letter that immediately
-follows a digit or period.  MeatPack *no-spaces* mode strips inter-word
-spaces; this regex restores them so that downstream ``parse_line()`` works."""
+follows a digit, period or another letter.  MeatPack *no-spaces* mode strips
+inter-word spaces; this regex restores them so that downstream ``parse_line()``
+works."""
+
+_MP_COMMAND = r"G[0-9]+(?:\.[0-9]+)?"
+_MP_COMMAND_RE = re.compile(rf"^({_MP_COMMAND})(?=[A-Z])")
+"""A G number with a word joined straight onto it."""
+
+_MP_WORDS = rf"{_MP_COMMAND}(?: *[A-Z](?: *[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))?)*"
+_MP_WORDS_RE = re.compile(_MP_WORDS)
+"""The G number and uppercase words a line starts with.  Each word starts with a
+letter, so joining them cannot change where a word or number ends."""
+
+_MP_JOINABLE_RE = re.compile(rf"({_MP_WORDS})[ \t]*(?:;|$)".encode())
+"""A G command made only of uppercase words, then any comment.  What follows the
+words can depend on the spaces, such as ``G1 X10 e5``, which would read as a number
+with an exponent, or ``G1 X1 (a;b) Y2``, so a line with anything else is not joined."""
+
+
+def _meatpack_pair_codes() -> List[bytes]:
+    """Encoded form of every pair of bytes, indexed by the pair read as a native uint16."""
+    nibble = {ord(char): index for index, char in enumerate(_MP_CHAR_TABLE)}
+    nibble[ord("E")] = nibble.pop(ord(" "))  # the space slot holds 'E' in no-spaces mode
+    codes = [b""] * 65536
+    for first in range(256):
+        low = nibble.get(first)
+        for second in range(256):
+            high = nibble.get(second)
+            if low is not None and high is not None:
+                code = bytes(((high << 4) | low,))
+            elif low is not None:
+                code = bytes((0xF0 | low, second))
+            elif high is not None:
+                code = bytes(((high << 4) | 0x0F, first))
+            else:
+                code = bytes((0xFF, first, second))
+            codes[int.from_bytes(bytes((first, second)), sys.byteorder)] = code
+    return codes
+
+
+_MP_PAIR_CODES: List[bytes] = []
+
+
+def _meatpack_encode(text: bytes) -> bytes:
+    """Encode G-code *text* with MeatPack, keeping comment lines.
+
+    Uses libbgcode's ``MeatPackComments`` encoding with whitespace omitted, as
+    PrusaSlicer does, but compacts lines less than it does: just G commands made
+    only of uppercase words lose their spaces and any comment after the command.
+    Everything else can hold a string or depend on its spacing, such as
+    ``M117 G1 done;ok`` or ``G1 X10 e5``, so it stays as written.  Blank lines are
+    dropped.  Whole-line comments stay as plain bytes, with packing switched off
+    around them.
+    """
+    if not _MP_PAIR_CODES:
+        _MP_PAIR_CODES.extend(_meatpack_pair_codes())
+    codes = _MP_PAIR_CODES.__getitem__
+    signal = bytes((0xFF, 0xFF))
+    enable = signal + bytes((_MP_CMD_ENABLE_PACKING,))
+    disable = signal + bytes((_MP_CMD_DISABLE_PACKING,))
+
+    output = bytearray(enable + signal + bytes((_MP_CMD_ENABLE_NO_SPACES,)))
+    packing = True
+    for line in text.split(b"\n"):
+        stripped = line.lstrip(b" \t")
+        if stripped.startswith(b";"):
+            if packing:
+                output += disable
+                packing = False
+            output += line + b"\n"
+            continue
+
+        code = stripped.rstrip(b" \t")
+        if not code:
+            continue
+        words = _MP_JOINABLE_RE.match(code)
+        if words:
+            code = words.group(1).replace(b" ", b"")
+
+        if not packing:
+            output += enable
+            packing = True
+        # Characters are packed in pairs, so an odd line gains a blank line.
+        code += b"\n\n" if len(code) % 2 == 0 else b"\n"
+        output += b"".join(map(codes, memoryview(code).cast("H")))
+    return bytes(output)
+
+
+def _space_words(line: str) -> str:
+    """Put spaces back between the words of a compacted G command in *line*.
+
+    Other writers join every G command, whatever follows its words, so only the
+    leading words are spaced.  If they already hold a space then the line was not
+    compacted, and only the command is split off, so that ``parse_line()`` finds it.
+    """
+    words = _MP_WORDS_RE.match(line)
+    if words and " " not in words.group():
+        return _MP_SPACE_RE.sub(" ", words.group()) + line[words.end():]
+    return _MP_COMMAND_RE.sub(r"\1 ", line)
 
 
 def _meatpack_decode(data: bytes) -> str:
@@ -278,12 +447,14 @@ def _meatpack_decode(data: bytes) -> str:
     if held_char is not None:
         out.append(held_char)
 
-    text = "".join(out)
+    # Plain bytes were appended one at a time, so multi-byte UTF-8 is still in pieces.
+    text = "".join(out).encode("latin-1").decode("utf-8", "replace")
 
-    # MeatPack no-spaces mode strips whitespace between G-code words.
-    # Re-insert spaces so that "G1X10Y20" becomes "G1 X10 Y20" and
-    # parse_line() can split the command from its axes.
-    return _MP_SPACE_RE.sub(" ", text)
+    # MeatPack no-spaces mode strips whitespace between the words of G commands.
+    # Re-insert spaces so that "G1X10Y20" becomes "G1 X10 Y20" and parse_line()
+    # can split the command from its axes.  Other lines keep their spaces and can
+    # hold strings, such as M862.3 P "MK4S", so they must stay as they are.
+    return "\n".join(map(_space_words, text.split("\n")))
 
 
 # ---------------------------------------------------------------------------
@@ -489,9 +660,36 @@ def read_bgcode(data: bytes) -> "GCodeFile":
     return _load_bgcode(data)
 
 
+def _split_gcode(gcode: bytes) -> Iterator[bytes]:
+    """Split *gcode* into runs of whole lines of at most the G-code block size."""
+    start = 0
+    size = len(gcode)
+    while size - start > _BGCODE_GCODE_BLOCK_SIZE:
+        end = gcode.rfind(b"\n", start, start + _BGCODE_GCODE_BLOCK_SIZE) + 1
+        if end <= start:  # a line longer than a block
+            end = gcode.find(b"\n", start + _BGCODE_GCODE_BLOCK_SIZE)
+            end = size if end < 0 else end + 1
+        yield gcode[start:end]
+        start = end
+    if start < size:
+        yield gcode[start:]
+
+
+def _compressed_gcode_block(gcode: bytes) -> bytes:
+    """One G-code block: MeatPack with comments, then Heatshrink, as PrusaSlicer writes."""
+    encoded = _meatpack_encode(gcode)
+    payload = _heatshrink_compress(encoded, 12, 4)
+    header = struct.pack("<HHII", _BLK_GCODE, _COMP_HEATSHRINK_12_4, len(encoded), len(payload))
+    params = struct.pack("<H", _ENC_MEATPACK_COMMENTS)
+    checksum = zlib.crc32(params, zlib.crc32(header))
+    checksum = zlib.crc32(payload, checksum)
+    return header + params + payload + struct.pack("<I", checksum & 0xFFFFFFFF)
+
+
 def write_bgcode(
     ascii_gcode: str,
     thumbnails: Optional[List[Thumbnail]] = None,
+    compress: bool = False,
 ) -> bytes:
     """Serialise ASCII G-code (and optional thumbnails) to ``.bgcode`` bytes.
 
@@ -506,6 +704,13 @@ def write_bgcode(
                  that have a ``_raw_block`` (i.e. from a previously loaded
                  ``.bgcode`` file) are embedded verbatim for lossless
                  round-trips; others are serialised as uncompressed blocks.
+    compress:    Write the G-code as PrusaSlicer does, in blocks of up to
+                 64 KiB of text with MeatPack encoding and Heatshrink
+                 compression, which is a fraction of the size of plain text.
+                 G commands made only of uppercase words lose their spaces and
+                 any comment after the command, and blank lines are dropped,
+                 which leaves the commands the printer runs unchanged.  Other
+                 lines stay as written.
 
     Returns
     -------
@@ -527,4 +732,9 @@ def write_bgcode(
             cksum   = zlib.crc32(payload, cksum) & 0xFFFFFFFF
             thumb_blocks.append(hdr + params + payload + struct.pack("<I", cksum))
 
+    if compress and ascii_gcode:
+        # A CR ends a line for the firmware too, so it must not hide one from the encoder.
+        gcode = ascii_gcode.encode("utf-8").replace(b"\r", b"\n")
+        blocks = [_compressed_gcode_block(part) for part in _split_gcode(gcode)]
+        return _BGCODE_FILE_HDR_V2 + b"".join(thumb_blocks + blocks)
     return _bgcode_reassemble(_BGCODE_FILE_HDR_V2, thumb_blocks, ascii_gcode)
