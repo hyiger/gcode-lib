@@ -244,10 +244,21 @@ _MP_CMD_RESET_ALL           = 249
 _MP_CMD_ENABLE_NO_SPACES    = 247
 _MP_CMD_DISABLE_NO_SPACES   = 246
 
-_MP_SPACE_RE = re.compile(r"(?<=[0-9.])(?=[A-Z])")
+_MP_SPACE_RE = re.compile(r"(?<=[0-9.A-Z])(?=[A-Z])")
 """Insert whitespace before an uppercase axis/command letter that immediately
-follows a digit or period.  MeatPack *no-spaces* mode strips inter-word
-spaces; this regex restores them so that downstream ``parse_line()`` works."""
+follows a digit, period or another letter.  MeatPack *no-spaces* mode strips
+inter-word spaces; this regex restores them so that downstream ``parse_line()``
+works."""
+
+_MP_WORDS = r"G[0-9]+(?:\.[0-9]+)?(?: *[A-Z](?: *[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))?)*"
+_MP_WORDS_RE = re.compile(_MP_WORDS)
+"""The G number and uppercase words a line starts with.  Each word starts with a
+letter, so joining them cannot change where a word or number ends."""
+
+_MP_JOINABLE_RE = re.compile(rf"({_MP_WORDS})[ \t]*(?:;|$)".encode())
+"""A G command made only of uppercase words, then any comment.  What follows the
+words can depend on the spaces, such as ``G1 X10 e5``, which would read as a number
+with an exponent, or ``G1 X1 (a;b) Y2``, so a line with anything else is not joined."""
 
 
 def _meatpack_pair_codes() -> List[bytes]:
@@ -278,11 +289,12 @@ def _meatpack_encode(text: bytes) -> bytes:
     """Encode G-code *text* with MeatPack, keeping comment lines.
 
     Uses libbgcode's ``MeatPackComments`` encoding with whitespace omitted, as
-    PrusaSlicer does, but compacts lines only as far as the firmware itself does:
-    just lines starting with G and a digit lose their spaces and any comment after
-    the command.  Other commands can hold strings, such as ``M117 G1 done;ok``, so
-    they stay as written.  Blank lines are dropped.  Whole-line comments stay as
-    plain bytes, with packing switched off around them.
+    PrusaSlicer does, but compacts lines less than it does: just G commands made
+    only of uppercase words lose their spaces and any comment after the command.
+    Everything else can hold a string or depend on its spacing, such as
+    ``M117 G1 done;ok`` or ``G1 X10 e5``, so it stays as written.  Blank lines are
+    dropped.  Whole-line comments stay as plain bytes, with packing switched off
+    around them.
     """
     if not _MP_PAIR_CODES:
         _MP_PAIR_CODES.extend(_meatpack_pair_codes())
@@ -302,12 +314,12 @@ def _meatpack_encode(text: bytes) -> bytes:
             output += line + b"\n"
             continue
 
-        code = stripped.rstrip(b" \t\r")
+        code = stripped.rstrip(b" \t")
         if not code:
             continue
-        # A checksum covers the spaces, so that line has to keep them.
-        if code[:1] == b"G" and code[1:2].isdigit() and b"*" not in code:
-            code = code.partition(b";")[0].replace(b" ", b"")
+        words = _MP_JOINABLE_RE.match(code)
+        if words:
+            code = words.group(1).replace(b" ", b"")
 
         if not packing:
             output += enable
@@ -316,6 +328,18 @@ def _meatpack_encode(text: bytes) -> bytes:
         code += b"\n\n" if len(code) % 2 == 0 else b"\n"
         output += b"".join(map(codes, memoryview(code).cast("H")))
     return bytes(output)
+
+
+def _space_words(line: str) -> str:
+    """Put spaces back between the words of a compacted G command in *line*.
+
+    Other writers join every G command, whatever follows its words, so only the
+    leading words are spaced.  A line that has spaces there was never compacted.
+    """
+    words = _MP_WORDS_RE.match(line)
+    if not words or " " in words.group():
+        return line
+    return _MP_SPACE_RE.sub(" ", words.group()) + line[words.end():]
 
 
 def _meatpack_decode(data: bytes) -> str:
@@ -425,10 +449,7 @@ def _meatpack_decode(data: bytes) -> str:
     # Re-insert spaces so that "G1X10Y20" becomes "G1 X10 Y20" and parse_line()
     # can split the command from its axes.  Other lines keep their spaces and can
     # hold strings, such as M862.3 P "MK4S", so they must stay as they are.
-    return "\n".join(
-        _MP_SPACE_RE.sub(" ", line) if line.startswith("G") else line
-        for line in text.split("\n")
-    )
+    return "\n".join(map(_space_words, text.split("\n")))
 
 
 # ---------------------------------------------------------------------------
@@ -681,9 +702,10 @@ def write_bgcode(
     compress:    Write the G-code as PrusaSlicer does, in blocks of up to
                  64 KiB of text with MeatPack encoding and Heatshrink
                  compression, which is a fraction of the size of plain text.
-                 Lines starting with G and a digit lose their spaces and any
-                 comment after the command, and blank lines are dropped, which
-                 leaves the commands the printer runs unchanged.
+                 G commands made only of uppercase words lose their spaces and
+                 any comment after the command, and blank lines are dropped,
+                 which leaves the commands the printer runs unchanged.  Other
+                 lines stay as written.
 
     Returns
     -------
@@ -706,6 +728,8 @@ def write_bgcode(
             thumb_blocks.append(hdr + params + payload + struct.pack("<I", cksum))
 
     if compress and ascii_gcode:
-        blocks = [_compressed_gcode_block(part) for part in _split_gcode(ascii_gcode.encode("utf-8"))]
+        # A CR ends a line for the firmware too, so it must not hide one from the encoder.
+        gcode = ascii_gcode.encode("utf-8").replace(b"\r", b"\n")
+        blocks = [_compressed_gcode_block(part) for part in _split_gcode(gcode)]
         return _BGCODE_FILE_HDR_V2 + b"".join(thumb_blocks + blocks)
     return _bgcode_reassemble(_BGCODE_FILE_HDR_V2, thumb_blocks, ascii_gcode)

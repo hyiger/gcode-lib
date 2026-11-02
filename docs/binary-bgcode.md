@@ -86,10 +86,10 @@ about 60% smaller than plain text.
 bgcode_bytes = gl.write_bgcode(gl.to_text(gf), thumbnails=gf.thumbnails, compress=True)
 ```
 
-The commands the printer runs stay the same, but the text does not. Lines starting with `G` and a
-digit lose their spaces and any comment after the command, so `G1 X10 Y20 ; move` is stored as
-`G1X10Y20`, and blank lines are dropped. Other lines stay as written, because commands such as
-`M117` can hold text.
+The commands the printer runs stay the same, but the text does not. `G` commands made only of
+uppercase words lose their spaces and any comment after the command, so `G1 X10 Y20 ; move` is stored
+as `G1X10Y20`, and blank lines are dropped. Other lines stay as written, because commands such as
+`M117` can hold text, and joining `G1 X10 e5` would make `10e5` a single number.
 
 `save()` keeps a loaded file's blocks but always writes the G-code uncompressed, so a compressed
 file comes back larger after `load()` and `save()`. To keep it small, write it again with

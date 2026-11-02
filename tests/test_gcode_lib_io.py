@@ -895,6 +895,100 @@ class TestWriteCompressedBgcode:
         gl.save(gl.load(str(path)), str(saved))
         assert gl.load(str(saved)).lines[0].raw == line
 
+    @pytest.mark.parametrize("line", [
+        "G1 X10 e5",  # joined, X10e5 is a number with an exponent
+        "G1 X1 2",  # joined, X12 is a different number
+        "G1 X1 .5",
+        "G1 X10 (note; detail) Y20",  # the semicolon is inside the comment
+        "G1 X1 (A1B) Y2 ; move",
+        "G1 X1 (unclosed",
+        'G1 X1 "a;b" Y2',
+        "G1 X10 Y20 *33",  # a checksum covers the spaces
+        "G1 5 X10",  # joined, G15 is a different command
+        "G1 .5 X1",
+        "G29 LOAD (A)",  # a line with spaces is not spaced again
+    ])
+    def test_a_g_command_that_cannot_be_joined_stays_as_written(self, encoder, line):
+        back = gl.read_bgcode(gl.write_bgcode(line + "\n", compress=True))
+        assert back.lines[0].raw == line
+
+    def test_a_lowercase_exponent_is_not_invented(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode("G1 X10 e5\n", compress=True))
+        assert back.lines[0].words == {"X": 10.0, "E": 5.0}
+
+    def test_a_word_after_a_parenthesized_semicolon_survives(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode("G1 X10 (note; detail) Y20\n", compress=True))
+        assert back.lines[0].words == {"X": 10.0, "Y": 20.0}
+
+    def test_uppercase_e_is_a_word_and_not_an_exponent(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode("G1 X10 E5\n", compress=True))
+        assert back.lines[0].raw == "G1 X10 E5"
+        assert back.lines[0].words == {"X": 10.0, "E": 5.0}
+
+    @pytest.mark.parametrize("line, stored", [
+        ("G28 X Y", "G28XY"),
+        ("G29 P1 X0 C", "G29P1X0C"),
+        ("G1 X 10", "G1X10"),
+        ("G1 E-.8 F2100.", "G1E-.8F2100."),
+        ("G1 X1. Y2", "G1X1.Y2"),
+        ("G92.1 X+1 ; note", "G92.1X+1"),
+        ("G1 X10 E5", "G1X10E5"),
+    ])
+    def test_a_g_command_of_uppercase_words_is_stored_joined(self, line, stored, monkeypatch):
+        monkeypatch.setattr(gl._bgcode, "_space_words", lambda text: text)
+        encoded = gl._bgcode._meatpack_encode((line + "\n").encode())
+        assert gl._meatpack_decode(encoded).strip("\n") == stored
+
+    @pytest.mark.parametrize("line, read", [
+        ("G28 X Y", "G28 X Y"),
+        ("G29 P1 X0 C", "G29 P1 X0 C"),
+        ("G1 X 10", "G1 X10"),
+        ("G1 E-.8 F2100.", "G1 E-.8 F2100."),
+        ("G92.1 X+1 ; note", "G92.1 X+1"),
+    ])
+    def test_joined_words_are_spaced_again_on_reading(self, encoder, line, read):
+        back = gl.read_bgcode(gl.write_bgcode(line + "\n", compress=True))
+        assert back.lines[0].raw == read
+
+    @pytest.mark.parametrize("stored, read, command", [
+        # libbgcode joins every G command, whatever it holds.
+        ("G1Z5f600", "G1 Z5f600", "G1"),
+        ("G1X10(fast)Y20", "G1 X10(fast)Y20", "G1"),
+        ("G2X1Y2I3J4(A1B)", "G2 X1 Y2 I3 J4(A1B)", "G2"),
+        ("G92E0z0", "G92 E0z0", "G92"),
+        ("G1X10;note", "G1 X10;note", "G1"),
+        ("G1X10\r", "G1 X10\r", "G1"),
+    ])
+    def test_a_line_joined_by_another_writer_keeps_its_command(self, stored, read, command):
+        decoded = gl._meatpack_decode(stored.encode() + b"\n")
+        assert decoded == read + "\n"
+        assert gl.parse_line(decoded).command == command
+
+    @pytest.mark.parametrize("gcode, commands", [
+        ("G28 ; home\rG1 X1\rM84\r", ["G28", "G1 X1", "M84"]),
+        ("G28\r;start\rG1 X1\rM84\r", ["G28", "G1 X1", "M84"]),
+        ("G1 X1 ; a\rG1 Y2\n", ["G1 X1", "G1 Y2"]),
+        ("G1 X1\r\nM84\r\n", ["G1 X1", "M84"]),
+    ])
+    def test_a_carriage_return_ends_a_line(self, encoder, gcode, commands):
+        lines = gl.read_bgcode(gl.write_bgcode(gcode, compress=True)).lines
+        assert [line.raw for line in lines if line.raw and line.raw[0] != ";"] == commands
+
+    def test_a_file_with_carriage_returns_is_split_into_blocks(self, encoder):
+        gcode = "G1 X1 Y2\r" * 20_000
+        written = gl.write_bgcode(gcode, compress=True)
+        assert sum(line.raw == "G1 X1 Y2" for line in gl.read_bgcode(written).lines) == 20_000
+        assert all(len(part) <= 65536 for part in gl._bgcode._split_gcode(gcode.replace("\r", "\n").encode()))
+
+    def test_a_comment_after_a_line_that_cannot_be_joined_is_kept(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode("G1 X10 e5 ; A1B2\n", compress=True))
+        assert back.lines[0].raw == "G1 X10 e5 ; A1B2"
+
+    def test_a_long_word_of_digits_stays_as_written_without_slowing_the_encoder(self):
+        line = "G1 X" + "1" * 200_000 + "!"
+        encoded = gl._bgcode._meatpack_encode(line.encode() + b"\n")
+        assert gl._meatpack_decode(encoded).strip("\n") == line
+
     def test_g_commands_are_spaced_again_on_reading(self, encoder):
         back = gl.read_bgcode(gl.write_bgcode("G1 X1.5 Y2 E.5\n", compress=True))
         assert back.lines[0].raw == "G1 X1.5 Y2 E.5"
