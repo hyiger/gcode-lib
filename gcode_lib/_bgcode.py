@@ -250,7 +250,11 @@ follows a digit, period or another letter.  MeatPack *no-spaces* mode strips
 inter-word spaces; this regex restores them so that downstream ``parse_line()``
 works."""
 
-_MP_WORDS = r"G[0-9]+(?:\.[0-9]+)?(?: *[A-Z](?: *[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))?)*"
+_MP_COMMAND = r"G[0-9]+(?:\.[0-9]+)?"
+_MP_COMMAND_RE = re.compile(rf"^({_MP_COMMAND})(?=[A-Z])")
+"""A G number with a word joined straight onto it."""
+
+_MP_WORDS = rf"{_MP_COMMAND}(?: *[A-Z](?: *[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))?)*"
 _MP_WORDS_RE = re.compile(_MP_WORDS)
 """The G number and uppercase words a line starts with.  Each word starts with a
 letter, so joining them cannot change where a word or number ends."""
@@ -334,12 +338,13 @@ def _space_words(line: str) -> str:
     """Put spaces back between the words of a compacted G command in *line*.
 
     Other writers join every G command, whatever follows its words, so only the
-    leading words are spaced.  A line that has spaces there was never compacted.
+    leading words are spaced.  If they already hold a space then the line was not
+    compacted, and only the command is split off, so that ``parse_line()`` finds it.
     """
     words = _MP_WORDS_RE.match(line)
-    if not words or " " in words.group():
-        return line
-    return _MP_SPACE_RE.sub(" ", words.group()) + line[words.end():]
+    if words and " " not in words.group():
+        return _MP_SPACE_RE.sub(" ", words.group()) + line[words.end():]
+    return _MP_COMMAND_RE.sub(r"\1 ", line)
 
 
 def _meatpack_decode(data: bytes) -> str:

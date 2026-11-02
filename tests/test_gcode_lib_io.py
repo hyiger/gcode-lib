@@ -958,11 +958,19 @@ class TestWriteCompressedBgcode:
         ("G92E0z0", "G92 E0z0", "G92"),
         ("G1X10;note", "G1 X10;note", "G1"),
         ("G1X10\r", "G1 X10\r", "G1"),
+        ("G1X10 Y20 (note)", "G1 X10 Y20 (note)", "G1"),
+        ("G1X10 Y20Z1 (A1B)", "G1 X10 Y20Z1 (A1B)", "G1"),
+        ("G29LOAD X1 (A)", "G29 LOAD X1 (A)", "G29"),
     ])
     def test_a_line_joined_by_another_writer_keeps_its_command(self, stored, read, command):
         decoded = gl._meatpack_decode(stored.encode() + b"\n")
         assert decoded == read + "\n"
         assert gl.parse_line(decoded).command == command
+
+    def test_a_partly_joined_move_is_still_a_move(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode("G1X10 Y20 (note)\n", compress=True))
+        assert back.lines[0].is_move
+        assert gl.translate_xy(back.lines, 1, 1)[0].raw.startswith("G1 X11 Y21")
 
     @pytest.mark.parametrize("gcode, commands", [
         ("G28 ; home\rG1 X1\rM84\r", ["G28", "G1 X1", "M84"]),
