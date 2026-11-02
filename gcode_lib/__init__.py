@@ -126,6 +126,8 @@ from gcode_lib._bgcode import (
 from gcode_lib._bgcode import (
     _bgcode_reassemble,
     _bgcode_split,
+    _heatshrink_compress,
+    _heatshrink_compress_python,
     _heatshrink_decompress,
     _is_bgcode_file,
     _load_bgcode,

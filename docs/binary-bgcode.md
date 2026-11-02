@@ -71,7 +71,33 @@ gcode_text = "G28\nG90\nG1 X50 Y50 Z0.2 F3000\n"
 bgcode_bytes = gl.write_bgcode(gcode_text)
 ```
 
-> **Note:** `write_bgcode` produces a valid BGCode v2 file with an uncompressed
-> (type 0) G-code block encoded as raw UTF-8.
+> **Note:** by default `write_bgcode` produces a BGCode v2 file with a single uncompressed
+> (type 0) G-code block encoded as raw UTF-8, which is no smaller than plain text.
 > Reading supports all BGCode compression types (None, DEFLATE, Heatshrink) and all encoding
 > types (raw UTF-8, MeatPack, MeatPack with comments).
+
+## Compression
+
+Pass `compress=True` to write the G-code the way PrusaSlicer does: Heatshrink 12/4 compression
+over MeatPack encoding with comments kept, in blocks of up to 64 KiB of text. A file is typically
+about 60% smaller than plain text.
+
+```python
+bgcode_bytes = gl.write_bgcode(gl.to_text(gf), thumbnails=gf.thumbnails, compress=True)
+```
+
+The commands the printer runs stay the same, but the text does not. Lines starting with `G` and a
+digit lose their spaces and any comment after the command, so `G1 X10 Y20 ; move` is stored as
+`G1X10Y20`, and blank lines are dropped. Other lines stay as written, because commands such as
+`M117` can hold text.
+
+`save()` keeps a loaded file's blocks but always writes the G-code uncompressed, so a compressed
+file comes back larger after `load()` and `save()`. To keep it small, write it again with
+`write_bgcode(gl.to_text(gf), thumbnails=gf.thumbnails, compress=True)`.
+
+Compression works with the standard library alone, at about 1 second per megabyte. Installing the
+optional extra uses a C encoder that is about 25 times faster:
+
+```
+pip install "gcode-lib[compression]"
+```

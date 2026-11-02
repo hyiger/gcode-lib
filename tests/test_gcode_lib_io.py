@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import struct
+import subprocess
 import sys
 import zlib
 from pathlib import Path
@@ -475,16 +477,13 @@ class TestMeatpackDecode:
         assert result == "M7"  # raw 'M' first, then packed '7'
 
     def test_escape_second_nibble(self):
-        """Second nibble (hi) is escape → next raw byte is second char.
-
-        The space normalization inserts whitespace between a digit and an
-        uppercase letter (``3P`` → ``3 P``)."""
+        """Second nibble (hi) is escape → next raw byte is second char."""
         # '3' in table = nibble 3, escape = 0xF
         # lo=3, hi=0xF → byte = (0xF << 4) | 3 = 0xF3
         # Then raw byte 0x50 = 'P'
         data = self.ENABLE + bytes([0xF3, 0x50])
         result = gl._meatpack_decode(data)
-        assert result == "3 P"  # packed '3' first, then raw 'P' (space inserted)
+        assert result == "3P"  # packed '3' first, then raw 'P'
 
     def test_both_escape(self):
         """Both nibbles are escapes → next 2 bytes are raw."""
@@ -803,3 +802,209 @@ class TestSaveFailure:
              patch("gcode_lib._io.os.unlink", side_effect=OSError("busy")):
             with pytest.raises(OSError, match="disk full"):
                 gl.save(factory(), str(target))
+
+
+# ---------------------------------------------------------------------------
+# write_bgcode(compress=True)
+# ---------------------------------------------------------------------------
+
+
+def _blocks(data):
+    """(type, compression, uncompressed size, payload size, encoding) of each block."""
+    position, blocks = 10, []
+    while position < len(data):
+        block_type, compression, uncompressed = struct.unpack_from("<HHI", data, position)
+        header = 8 if compression == 0 else 12
+        stored = uncompressed if compression == 0 else struct.unpack_from("<I", data, position + 8)[0]
+        params = 6 if block_type == 5 else 2
+        encoding = struct.unpack_from("<H", data, position + header)[0]
+        blocks.append((block_type, compression, uncompressed, stored, encoding))
+        position += header + params + stored + 4
+    assert position == len(data)
+    return blocks
+
+
+def _commands(text):
+    """The commands in *text*, ignoring spacing, blank lines and comments."""
+    lines = (line.partition(";")[0].replace(" ", "") for line in text.splitlines())
+    return [line for line in lines if line]
+
+
+@pytest.fixture(params=["pure_python", "heatshrink2"])
+def encoder(request, monkeypatch):
+    """Runs a test with each Heatshrink encoder."""
+    if request.param == "pure_python":
+        monkeypatch.setattr(gl._bgcode, "heatshrink2", None)
+    else:
+        pytest.importorskip("heatshrink2")
+    return request.param
+
+
+class TestWriteCompressedBgcode:
+    GCODE = "G28\n; a comment\nG1 X10.5 Y20.25 Z0.2 F3000 ; move\n\nM104 S215\nT1\n; end\n"
+
+    def test_gcode_blocks_are_heatshrink_over_meatpack_with_comments(self, encoder):
+        block = _blocks(gl.write_bgcode(self.GCODE, compress=True))[0]
+        assert block[:2] == (1, 3)  # G-code, Heatshrink 12/4
+        assert block[4] == 2  # MeatPack with comments
+
+    def test_commands_survive(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode(self.GCODE, compress=True))
+        assert _commands("\n".join(line.raw for line in back.lines)) == _commands(self.GCODE)
+
+    def test_comment_lines_survive(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode(self.GCODE, compress=True))
+        assert "; a comment" in [line.raw for line in back.lines]
+
+    def test_a_comment_after_a_g_command_is_dropped(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode("G1 X1 ; move\n", compress=True))
+        assert not any("move" in line.raw for line in back.lines)
+
+    def test_a_comment_after_another_command_is_kept(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode('M862.3 P "MK4S" ; printer check\n', compress=True))
+        assert back.lines[0].raw == 'M862.3 P "MK4S" ; printer check'
+
+    def test_lowercase_parameters_stay_lowercase(self, encoder):
+        # Marlin ignores these, so turning e5 into E5 would add a real extrusion.
+        back = gl.read_bgcode(gl.write_bgcode("G1 X10 e5\nG28 x\n", compress=True))
+        assert _commands("\n".join(line.raw for line in back.lines)) == ["G1X10e5", "G28x"]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "M117 G1 hello world",
+            "M117 Step 1;Step 2",
+            'M117 "a;b"',
+            "M118 E1 G28 home x",
+            'M486 AG1 bracket x',
+            "M0 S5 Press G1 to go",
+            'M701 S"PETG2 x"',
+            "M106 P3 N25 G5",
+        ],
+    )
+    def test_commands_that_can_hold_text_stay_exact(self, encoder, line):
+        back = gl.read_bgcode(gl.write_bgcode(line + "\n", compress=True))
+        assert back.lines[0].raw == line
+
+    @pytest.mark.parametrize("printer", ["MK4S", "MK3.5S", "MK4IS", "COREONE"])
+    def test_a_printer_id_survives_load_and_save(self, encoder, printer, tmp_path):
+        line = f'M862.3 P "{printer}"'
+        path = tmp_path / "print.bgcode"
+        path.write_bytes(gl.write_bgcode(line + "\nG1 X1 Y2\n", compress=True))
+        saved = tmp_path / "saved.bgcode"
+        gl.save(gl.load(str(path)), str(saved))
+        assert gl.load(str(saved)).lines[0].raw == line
+
+    def test_g_commands_are_spaced_again_on_reading(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode("G1 X1.5 Y2 E.5\n", compress=True))
+        assert back.lines[0].raw == "G1 X1.5 Y2 E.5"
+
+    def test_a_line_with_a_checksum_keeps_its_spaces(self):
+        encoded = gl._bgcode._meatpack_encode(b"N1 G1 X1*34\n")
+        assert b" " in encoded
+
+    def test_a_non_g_command_keeps_its_text(self, encoder):
+        back = gl.read_bgcode(gl.write_bgcode('M862.3 P "COREONE"\n', compress=True))
+        assert back.lines[0].raw == 'M862.3 P "COREONE"'
+
+    def test_every_character_round_trips_through_an_odd_or_even_line(self, encoder):
+        for line in ("M1", "M12", "G1 X1", "G1 X12", "M117 Y", "M117 YZ"):
+            back = gl.read_bgcode(gl.write_bgcode(line + "\n", compress=True))
+            assert _commands("\n".join(l.raw for l in back.lines)) == _commands(line)
+
+    def test_non_ascii_comments_and_commands_survive(self, encoder):
+        text = "; printing Würfel 立方体\nM486 AWürfel\nG28\n"
+        back = gl.read_bgcode(gl.write_bgcode(text, compress=True))
+        raw = [line.raw for line in back.lines]
+        assert "; printing Würfel 立方体" in raw
+        assert any("Würfel" in line and line.startswith("M486") for line in raw)
+
+    def test_large_gcode_spans_blocks_of_at_most_64_kib_of_text(self, encoder):
+        text = "".join(f"G1 X{i % 200}.{i % 97} Y{i % 150}.{i % 89} E.0{i % 91}\n" for i in range(40000))
+        data = gl.write_bgcode(text, compress=True)
+        blocks = [block for block in _blocks(data) if block[0] == 1]
+        assert len(blocks) > 1
+        assert all(block[2] <= 65536 for block in blocks)
+        back = gl.read_bgcode(data)
+        assert _commands("\n".join(line.raw for line in back.lines)) == _commands(text)
+
+    def test_a_line_longer_than_a_block_stays_whole(self, encoder):
+        long_comment = "; " + "x" * 70000
+        text = "G28\n" + long_comment + "\nG1 X1\n"
+        back = gl.read_bgcode(gl.write_bgcode(text, compress=True))
+        assert long_comment in [line.raw for line in back.lines]
+
+    def test_output_is_much_smaller_than_text(self, encoder):
+        text = "".join(f"G1 X{100 + i % 50}.{i % 97:03} Y{100 + i % 40}.{i % 89:03} E.0{i % 91}\n" for i in range(5000))
+        assert len(gl.write_bgcode(text, compress=True)) < len(text) * 0.6
+
+    def test_real_gcode_is_at_least_half_the_size(self, encoder):
+        path = os.path.join(os.path.dirname(__file__), "3DBenchy_0.6n_0.32mm_FLEX_COREONE_32m.gcode")
+        with open(path, encoding="utf-8") as file:
+            text = file.read()
+        gf = gl.from_text(text)
+        data = gl.write_bgcode(gl.to_text(gl.GCodeFile(lines=gf.lines, thumbnails=[], source_format="text")), compress=True)
+        assert len(data) < len(text) * 0.5
+
+    def test_thumbnails_are_kept(self, encoder):
+        thumbnail = gl.Thumbnail(params=struct.pack("<HHH", 0, 16, 16), data=b"\x89PNGdata", _raw_block=b"")
+        data = gl.write_bgcode("G28\n", thumbnails=[thumbnail], compress=True)
+        assert [block[0] for block in _blocks(data)] == [5, 1]
+        assert gl.read_bgcode(data).thumbnails[0].data == b"\x89PNGdata"
+
+    def test_empty_gcode_still_reads_back(self, encoder):
+        assert gl.read_bgcode(gl.write_bgcode("", compress=True)).lines == []
+
+    def test_default_output_is_unchanged(self):
+        assert _blocks(gl.write_bgcode(self.GCODE))[0][:2] == (1, 0)
+
+
+class TestOptionalHeatshrink:
+    def test_a_broken_heatshrink2_does_not_stop_the_library(self, tmp_path):
+        (tmp_path / "heatshrink2.py").write_text("raise OSError('bad library')\n", encoding="utf-8")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(tmp_path), root))}
+        code = "import gcode_lib as gl; print(len(gl.write_bgcode('G1 X1\\n', compress=True)) > 0)"
+        result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "True"
+
+
+class TestHeatshrinkEncoder:
+    @pytest.mark.parametrize("window", [11, 12])
+    @pytest.mark.parametrize(
+        "data",
+        [b"", b"a", b"ab", b"aaaa" * 100, b"abcabcabc" * 500, bytes(range(256)) * 20, b"G1 X1 Y2 E.5\n" * 3000],
+        ids=["empty", "one", "two", "run", "repeat", "binary", "gcode"],
+    )
+    def test_pure_python_round_trip(self, data, window):
+        encoded = gl._heatshrink_compress_python(data, window, 4)
+        assert gl._heatshrink_decompress(encoded, window, 4, len(data)) == data
+
+    def test_a_match_can_overlap_what_it_writes(self):
+        data = b"ab" * 8
+        assert len(gl._heatshrink_compress_python(data, 12, 4)) < len(data)
+
+    def test_references_never_leave_the_window(self):
+        data = b"marker" + bytes(i % 251 for i in range(5000)) + b"marker"
+        encoded = gl._heatshrink_compress_python(data, 11, 4)
+        assert gl._heatshrink_decompress(encoded, 11, 4, len(data)) == data
+
+    def test_heatshrink2_decodes_the_pure_python_stream(self):
+        heatshrink2 = pytest.importorskip("heatshrink2")
+        data = b"G1 X1.5 Y2.25 E.5\n" * 2000
+        encoded = gl._heatshrink_compress_python(data, 12, 4)
+        assert heatshrink2.decompress(encoded, window_sz2=12, lookahead_sz2=4) == data
+
+    def test_heatshrink2_is_used_when_installed(self, monkeypatch):
+        calls = []
+
+        class Fake:
+            @staticmethod
+            def compress(data, window_sz2, lookahead_sz2):
+                calls.append((window_sz2, lookahead_sz2))
+                return b"x"
+
+        monkeypatch.setattr(gl._bgcode, "heatshrink2", Fake)
+        assert gl._heatshrink_compress(b"data", 12, 4) == b"x"
+        assert calls == [(12, 4)]

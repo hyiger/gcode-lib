@@ -185,7 +185,7 @@ save(gf: GCodeFile, path: str) -> None
 from_text(text: str) -> GCodeFile
 to_text(gf: GCodeFile) -> str
 read_bgcode(data: bytes) -> GCodeFile
-write_bgcode(ascii_gcode: str, thumbnails=None) -> bytes
+write_bgcode(ascii_gcode: str, thumbnails=None, compress: bool = False) -> bytes
 ```
 
 ### Parsing
